@@ -1,10 +1,10 @@
 {
   "domain": "prana",
   "name": "Prana Integration",
-  "version": "0.1.0",
-  "config_flow": true,
-  "documentation": "https://github.com/your-github-username/ha-prana-ble",
-  "issue_tracker": "https://github.com/your-github-username/ha-prana-ble/issues",
+  "version": "1.0.0",
+  "documentation": "https://github.com/catdogmaus/Prana",
+  "issue_tracker": "https://github.com/catdogmaus/Prana/issues",
+  "codeowners": ["@catdogmaus"],
   "requirements": ["bleak>=0.20.0"],
   "bluetooth": [
     {
