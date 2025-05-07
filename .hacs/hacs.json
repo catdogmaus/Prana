@@ -1,5 +1,5 @@
 {
-  "name": "Prana",
+  "name": "Prana Integration",
   "content_in_root": false,
-  "country": "EU"
+  "domains": ["prana"]
 }
