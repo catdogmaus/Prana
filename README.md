@@ -24,4 +24,4 @@ If you HA does not discover your device automatically, in `Devices and Services`
 
 ## Problems with adding Prana device
 
-When you are unable to add new device even with manual setup make sure that Prana is not connected to any other device (e.g. native Prana app). Also make sure your HA Bluetooth "Connection slot allocations monitor" is not full!
+When you are unable to add new device even with manual setup make sure that Prana is not connected to any other device (e.g. native Prana app). Also make sure your HA Bluetooth `Connection slot allocations monitor` is not full!
