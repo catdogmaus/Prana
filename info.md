@@ -1,5 +1,5 @@
 ## About This Integration
-[![GitHub](https://img.shields.io/github/license/catdogmaus/Prana?color=green)](https://github.com/catdogmaus/Prana/blob/main/LICENSE)
+[![GitHub](https://img.shields.io/github/license/catdogmaus/Prana?color=green)](https://github.com/catdogmaus/Prana/blob/main/LICENSE)  
 **Prana Recuperators** allows Home Assistant to interface thru Bluetooth with [Prana Recuperators].
 
 ### Features
