@@ -1,0 +1,81 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Select Prana Device",
+                "description": "If your device is not discovered automatically, you can enter its Bluetooth MAC address manually.",
+                "data": {
+                    "address": "Device Address (MAC)"
+                }
+            },
+             "user_select": {
+                "title": "Select Prana Device",
+                "description": "Choose the discovered Prana device to add.",
+                "data": {
+                    "address": "Device"
+                }
+            },
+            "authenticate": {
+                "title": "Authentication",
+                "description": "Enter the password for your Prana device '{name}'. The default is '0000'.",
+                "data": {
+                    "password": "Password"
+                }
+            },
+            "bluetooth_confirm": {
+                "title": "Confirm Discovered Device",
+                "description": "Do you want to set up the Prana device named '{name}' at address {address}?"
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to the device. Please ensure it's powered on, in range, and the address is correct.",
+            "invalid_auth": "Authentication failed. Please check the password.",
+            "unknown": "An unknown error occurred.",
+             "abort_already_configured": "Device is already configured."
+        },
+        "abort": {
+            "already_configured": "This Prana device is already configured.",
+            "no_devices_found": "No Prana devices found. Ensure Bluetooth is enabled and the device is nearby. You can also try adding manually."
+        }
+    },
+     "entity": {
+        "sensor": {
+            "temp_in": { "name": "Indoor Temperature" },
+            "temp_out": { "name": "Outdoor Temperature" },
+            "temp_exhaust": { "name": "Exhaust Temperature" },
+            "temp_supply": { "name": "Supply Temperature" },
+            "humidity": { "name": "Humidity" },
+            "co2": { "name": "CO2" },
+            "voc": { "name": "VOC" },
+            "filter_timer_days": { "name": "Filter Remaining Time" },
+            "rssi": { "name": "Signal Strength" },
+            "winter_mode_active": {"name": "Winter Mode Active", "state": {"on": "On", "off": "Off"}},
+            "auto_mode_active": {"name": "Auto Mode Active", "state": {"on": "On", "off": "Off"}}
+        },
+        "switch": {
+            "power": { "name": "Power" }
+        },
+        "fan": {
+            "fan": { "name": "Ventilation Fan" }
+        },
+        "select": {
+            "mode": {
+                "name": "Mode",
+                "state": {
+                    "Auto": "Auto",
+                    "Winter": "Winter",
+                    "Summer": "Summer",
+                    "Ventilation": "Ventilation",
+                    "Supply Only": "Supply Only",
+                    "Exhaust Only": "Exhaust Only"
+                }
+            }
+        },
+        "number": {
+            "brightness": { "name": "Display Brightness" }
+        },
+        "button": {
+            "reset_filter": { "name": "Reset Filter Timer" }
+        }
+    }
+}
