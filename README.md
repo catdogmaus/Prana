@@ -9,7 +9,7 @@ If you are able, you are free to fork it and make it to work yourself.
 
 1. Go to HACS → Integrations
 2. Click the `+` button
-3. Add this repository as a **custom repository** (`https://[github.com/catdogmaus/Prana]`)
+3. Add this repository as a **custom repository** (`https://github.com/catdogmaus/Prana`)
 4. Select "Integration"
 5. Restart Home Assistant
 
