@@ -7,7 +7,7 @@ If you are able, you are free to fork it and make it to work yourself.
 
 ## Installation via HACS
 
-1. Go to HACS → Integrations
+1. Go to HACS
 2. Click the `⋮` button in corner
 3. Add this repository as a **custom repository** (`https://github.com/catdogmaus/Prana`)
 4. Select "Integration"
