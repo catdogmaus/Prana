@@ -2,6 +2,7 @@
 Allows Home Assistant to interface thru Bluetooth with Prana Recuperators
 
 **This integration is not yet ready for use!**  
+I belive strongly that this is because of my hardware. That means I am not able to make it work until in some day I change my HA hardware.  
 However it should install Prana device thru config flow withot any actual device data yet.
 If you are able, you are free to fork it and make it to work yourself.
 
