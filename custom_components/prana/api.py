@@ -1,474 +1,241 @@
-"""API for interacting with Prana BLE devices."""
+"""API for Prana BLE integration."""
 import asyncio
 import logging
-from typing import Any, Optional, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from bleak import BleakClient, BleakError
 from bleak.backends.device import BLEDevice
+from bleak.backends.characteristic import BleakGATTCharacteristic
+
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
-    LOGGER,
-    UUID_PRANA_WRITE,
-    UUID_PRANA_READ,
-    UUID_RWN_CHARACTERISTIC, # Using this based on user feedback
-    UUID_PRANA_SERVICE,      # Using this based on user feedback
-    PRANA_CMD_MAX_LEN,
-    PRANA_CMD_AUTH,
-    PRANA_CMD_SET_SPEED,
-    PRANA_CMD_SET_MODE,
-    PRANA_CMD_SET_POWER,
-    PRANA_CMD_GET_STATE,
-    PRANA_CMD_RESET_FILTER,
-    PRANA_CMD_SET_BRIGHTNESS,
-    PRANA_RESP_START_BYTE1,
-    PRANA_RESP_START_BYTE2,
-    PranaMode,
+    SERVICE_UUID,
+    CMD_AUTO_MODE,
+    CMD_BRIGHTNESS,
+    CMD_HEATING,
+    CMD_NIGHT_MODE,
+    CMD_POWER,
+    CMD_PREFIX_BUTTON,
+    CMD_WINTER_MODE,
+    CMD_FANS_SPEED_UP,
+    CMD_FANS_SPEED_DOWN,
+    CMD_FAN_IN_ON,
+    CMD_FAN_IN_OFF,
+    CMD_FAN_OUT_ON,
+    CMD_FAN_OUT_OFF,
+    CMD_FAN_LOCK,
+    UPDATE_SIGNAL,
 )
 
-# Timeout for BLE operations
-BLE_TIMEOUT = 20
-RECONNECT_DELAY = 5
+_LOGGER = logging.getLogger(__name__)
 
-def _calculate_checksum(data: bytes) -> int:
-    """Calculate the checksum for a Prana command/response."""
-    return sum(data) & 0xFF
-
-def _build_frame(command: int, password: str, args: Optional[list[int]] = None) -> bytearray:
-    """Build the full 20-byte command frame to send to the Prana device."""
-    if args is None:
-        args = []
-
-    frame = bytearray(PRANA_CMD_MAX_LEN) # Should be 20
-    frame[0] = command
-    pwd_bytes = password.encode('ascii')
-    frame[1:5] = pwd_bytes[:4]
-
-    arg_len = len(args)
-    args_start_index = 5
-    # Initialize args_end_index before the conditional block
-    args_end_index = args_start_index
-
-    if arg_len > 0:
-        args_end_index = args_start_index + arg_len
-        if args_end_index >= PRANA_CMD_MAX_LEN - 1:
-            LOGGER.warning("Arguments too long for frame, truncating.")
-            args_end_index = PRANA_CMD_MAX_LEN - 2
-            arg_len = args_end_index - args_start_index
-        frame[args_start_index:args_end_index] = args[:arg_len]
-
-    # Calculate checksum ONLY over the first 5 bytes (Command + Password)
-    checksum_payload_len = 5
-    calculated_checksum = _calculate_checksum(frame[:checksum_payload_len])
-    LOGGER.debug("Checksum calculated over first %d bytes: %s", checksum_payload_len, frame[:checksum_payload_len].hex())
-
-    frame[PRANA_CMD_MAX_LEN - 1] = calculated_checksum
-
-    LOGGER.debug("Built full 20-byte frame: %s", frame.hex())
-    return frame
+CHARACTERISTIC_UUID_CTL: str = "0000cccc-0000-1000-8000-00805f9b34fb"
+AUTH_CMD_1: bytes = bytes.fromhex("beef0c013213020d0a19")
+POLL_CMD: bytes = bytes.fromhex("beef0502000000005a")
+PACKET_HEADER = b"\xBE\xEF"
 
 
-class PranaBLEApiException(Exception):
-    """Custom exception for API errors."""
+class PranaApi:
+    """API for interacting with the Prana device."""
 
-class PranaBLEDevice:
-    """Class to manage communication with a Prana BLE device."""
+    def __init__(self, hass: HomeAssistant, ble_device: BLEDevice, name: str) -> None:
+        self.hass = hass
+        self.ble_device = ble_device
+        self.address = ble_device.address
+        self.name = name
+        self._client: BleakClient | None = None
+        self._is_connected: bool = False
+        self._parsed_status: Dict[str, Any] = {}
+        self._write_lock = asyncio.Lock()
+        self._control_char: BleakGATTCharacteristic | None = None
+        self._first_data_event = asyncio.Event()
+        _LOGGER.info("PranaApi initialized for %s (%s)", self.name, self.address)
 
-    def __init__(
-        self,
-        device: BLEDevice,
-        password: str,
-        disconnected_callback: Optional[Callable[[], None]] = None,
-        data_update_callback: Optional[Callable[[Dict[str, Any]], None]] = None
-    ) -> None:
-        """Initialize the Prana BLE device API."""
-        self._device = device
-        self._password = password
-        self._client: Optional[BleakClient] = None
-        self._lock = asyncio.Lock()
+    @callback
+    def handle_disconnect(self, client: BleakClient) -> None:
+        if not self._is_connected: return
+        _LOGGER.warning("%s: Disconnected from device.", self.name)
         self._is_connected = False
-        self._disconnect_callback = disconnected_callback
-        self._data_update_callback = data_update_callback
-        self._notification_queue = asyncio.Queue()
-        self._current_state: Dict[str, Any] = {}
-        self._disconnect_event = asyncio.Event()
-        self._is_authenticated = False # Track authentication status
-
-    @property
-    def name(self) -> str:
-        """Return the name of the device."""
-        return self._device.name or self._device.address
-
-    @property
-    def address(self) -> str:
-        """Return the address of the device."""
-        return self._device.address
-
-    @property
-    def is_connected(self) -> bool:
-        """Return the connection status."""
-        return self._client is not None and self._client.is_connected
-
-    def _handle_disconnect(self, client: BleakClient) -> None:
-        """Handle spontaneous disconnection."""
-        if not self._disconnect_event.is_set():
-            LOGGER.warning("Device %s disconnected (reported by Bleak)", self.address)
-            self._client = None
-            self._is_connected = False
-            self._is_authenticated = False # Reset auth status on disconnect
-            self._disconnect_event.set()
-            if self._disconnect_callback:
-                self._disconnect_callback()
-            else:
-                LOGGER.warning("_disconnect_callback not set for Prana API")
-
-    async def _notification_handler(self, sender: int, data: bytearray) -> None:
-        """Handle incoming data notifications from UUID_RWN_CHARACTERISTIC."""
-        LOGGER.error("!!! NOTIFICATION HANDLER CALLED (Handle: %d, Data: %s)", sender, data.hex()) # FORCED LOG
-        LOGGER.debug("Received notification (handle %d): %s", sender, data.hex())
-        if len(data) < 6:
-            LOGGER.warning("Received runt frame: %s", data.hex())
-            return
-        if data[0] != PRANA_RESP_START_BYTE1 or data[1] != PRANA_RESP_START_BYTE2:
-            LOGGER.warning("Received invalid frame start: %s", data.hex())
-            return
-
-        frame_len = data[2]
-        expected_total_len = 3 + frame_len + 1
-        if len(data) < expected_total_len:
-             LOGGER.warning("Received incomplete frame (expected %d bytes, got %d): %s", expected_total_len, len(data), data.hex())
-             return
-
-        payload = data[3 : 3 + frame_len]
-        received_checksum = data[3 + frame_len]
-        calculated_checksum = _calculate_checksum(payload)
-
-        if received_checksum != calculated_checksum:
-            LOGGER.warning(
-                "Checksum mismatch! Got %02x, calculated %02x. Frame: %s",
-                received_checksum, calculated_checksum, data.hex()
-            )
-            return
-
-        cmd = payload[0]
-        if cmd == PRANA_CMD_GET_STATE:
-            self._parse_state_data(payload[1:])
-        elif cmd == PRANA_CMD_AUTH:
-             if len(payload) > 1:
-                  if payload[1] == 0x01:
-                      LOGGER.info("Received potential AUTH Success indicator for %s", self.address)
-                      self._is_authenticated = True
-                  else:
-                      LOGGER.warning("Received potential AUTH Failure indicator for %s: %s", self.address, payload.hex())
-                      self._is_authenticated = False
-             else:
-                 LOGGER.info("Received AUTH response for %s (no specific data)", self.address)
-                 self._is_authenticated = True # Assume ACK means ok
-        # Add elif for other command responses if needed
-
-    def _parse_state_data(self, data: bytes) -> None:
-        """Parse the state data received from the device (after 0x55 AA len 05)."""
-        if len(data) < 14:
-             LOGGER.warning("State data payload too short: %d bytes. Data: %s", len(data), data.hex())
-             return
-
-        new_state = {}
-        try:
-            new_state["power"] = bool(data[0])
-            new_state["speed"] = data[1]
-
-            raw_mode = data[2]
-            try:
-                mode_enum = PranaMode(raw_mode)
-                new_state["mode"] = mode_enum.name
-            except ValueError:
-                 LOGGER.warning("Unknown mode value received: %d", raw_mode)
-                 new_state["mode"] = self._current_state.get("mode", None)
-
-            new_state["winter_mode_active"] = bool(data[3])
-            new_state["auto_mode_active"] = bool(data[4])
-
-            new_state["temp_in"] = int.from_bytes([data[5]], byteorder='little', signed=True)
-            new_state["temp_out"] = int.from_bytes([data[6]], byteorder='little', signed=True)
-            new_state["temp_exhaust"] = int.from_bytes([data[7]], byteorder='little', signed=True)
-            new_state["temp_supply"] = int.from_bytes([data[8]], byteorder='little', signed=True)
-
-            new_state["humidity"] = data[9] if data[9] != 0xFF else None
-
-            co2_bytes = data[10:12]
-            new_state["co2"] = int.from_bytes(co2_bytes, byteorder='little', signed=False) if co2_bytes != b'\xff\xff' else None
-
-            voc_bytes = data[12:14]
-            new_state["voc"] = int.from_bytes(voc_bytes, byteorder='little', signed=False) if voc_bytes != b'\xff\xff' else None
-
-            new_state["filter_timer_days"] = data[14] if len(data) > 14 else None
-            new_state["brightness"] = data[15] if len(data) > 15 else None
-
-            # If we successfully parse state, assume we are functionally authenticated enough to read.
-            if not self._is_authenticated:
-                LOGGER.info("Marking as authenticated due to successful state data parsing.")
-                self._is_authenticated = True
-
-            self._current_state = new_state
-            LOGGER.debug("Parsed state: %s", self._current_state)
-            if self._data_update_callback:
-                self._data_update_callback(self._current_state)
-
-        except IndexError:
-            LOGGER.error("Error parsing state data - data too short: %s", data.hex())
-        except Exception as e:
-            LOGGER.error("Unexpected error parsing state data: %s", e, exc_info=True)
-
-    async def _ensure_connected(self) -> bool:
-        """Ensure the device is connected, attempting connection and notification setup."""
-        LOGGER.debug(">>> _ensure_connected START. Currently connected: %s", self.is_connected)
-        if self._client and self._client.is_connected:
-            LOGGER.debug(">>> _ensure_connected: Already connected.")
-            return True
-
-        # Lock is acquired by the caller
-        LOGGER.debug(">>> _ensure_connected attempting connection (lock held by caller)")
-        if self._client and self._client.is_connected:
-            LOGGER.debug(">>> _ensure_connected: Already connected (checked after lock).")
-            return True
-
-        LOGGER.debug(">>> _ensure_connected: Attempting bleak connect to %s", self.address)
-        try:
-            if not self._client:
-                 LOGGER.debug(">>> _ensure_connected: Creating new BleakClient")
-                 self._client = BleakClient(self._device, disconnected_callback=self._handle_disconnect)
-
-            await self._client.connect(timeout=BLE_TIMEOUT)
-            self._is_connected = True
-            self._disconnect_event.clear()
-            LOGGER.info(">>> _ensure_connected: Connected successfully to %s", self.address)
-
-            try:
-                LOGGER.debug(">>> _ensure_connected: Attempting start_notify for %s", UUID_RWN_CHARACTERISTIC)
-                await self._client.start_notify(UUID_RWN_CHARACTERISTIC, self._notification_handler)
-                LOGGER.debug(">>> _ensure_connected: Started notifications successfully.")
-            except Exception as e:
-                LOGGER.error(">>> _ensure_connected: Error starting notifications: %s", e)
-                await self._disconnect_client()
-                return False # Cannot proceed without notifications
-
-            # --- Authentication attempt (result logged but doesn't block connection success) ---
-            LOGGER.debug(">>> _ensure_connected: Calling authenticate (result ignored for connection success)...")
-            auth_success = await self.authenticate() # Authenticate is now separate
-            LOGGER.info(">>> _ensure_connected: Authenticate attempt result: %s (continuing regardless)", auth_success)
-            if auth_success:
-                 self._is_authenticated = True # Set internal flag if AUTH send succeeds
-
-            LOGGER.debug(">>> _ensure_connected: Connection and notification setup successful.")
-            return True # Return True if connect and notify setup worked, regardless of auth result
-
-        except BleakError as e:
-            LOGGER.error(">>> _ensure_connected: BleakError connecting to %s: %s", self.address, e)
-            await self._disconnect_client()
-            return False
-        except Exception as e:
-            LOGGER.error(">>> _ensure_connected: Unexpected error during connection/setup to %s: %s", self.address, e, exc_info=True)
-            await self._disconnect_client()
-            return False
-
-    async def _disconnect_client(self):
-        """Safely disconnect the BleakClient."""
-        client = self._client
         self._client = None
-        self._is_connected = False
-        self._is_authenticated = False # Reset auth on disconnect
+        self._control_char = None
+        self._first_data_event.clear()
+        instance_specific_signal = f"{UPDATE_SIGNAL}_{self.name}"
+        async_dispatcher_send(self.hass, instance_specific_signal, None)
 
-        if client and client.is_connected:
-             LOGGER.error("!!! DISCONNECTING CLIENT (connected=True) for %s", self.address) # FORCED LOG
-             try:
-                await client.stop_notify(UUID_RWN_CHARACTERISTIC)
-             except Exception as e:
-                 LOGGER.warning("Error stopping notifications during disconnect for %s: %s", self.address, e)
-             try:
-                await client.disconnect()
-                LOGGER.info("Disconnected from %s", self.address)
-             except Exception as e:
-                 LOGGER.warning("Error during explicit disconnect for %s: %s", self.address, e)
+    @callback
+    def _notification_callback(self, characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
+        _LOGGER.debug("%s: Received notification: %s", self.name, data.hex())
+        if data.startswith(PACKET_HEADER + b'\x05\x02'):
+            self._parsed_status = self._parse_status_data(bytes(data))
+            if self._parsed_status:
+                self._first_data_event.set()
+                instance_specific_signal = f"{UPDATE_SIGNAL}_{self.name}"
+                async_dispatcher_send(self.hass, instance_specific_signal, self._parsed_status)
         else:
-             LOGGER.error("!!! DISCONNECT CLIENT CALLED but client was None or not connected for %s", self.address) # FORCED LOG
+            _LOGGER.debug("%s: Received unknown notification: %s", self.name, data.hex())
 
-        if not self._disconnect_event.is_set():
-            self._disconnect_event.set()
-
-    async def stop(self) -> None:
-        """Stop communication and disconnect."""
-        LOGGER.debug("Stopping communication with %s", self.address)
-        await self._disconnect_client()
-
-    async def _send_command(self, command: int, args: Optional[list[int]] = None) -> bool:
-        """Build and send a command frame. Assumes lock is held and connection *might* exist."""
-        # Check connection status *before* building frame
-        if not self.is_connected or not self._client:
-             LOGGER.error(">>> _send_command: Cannot send command 0x%02X, client not connected.", command)
-             return False
-
-        LOGGER.debug(">>> _send_command START for command 0x%02X", command)
+    async def update_after_connect(self, client: BleakClient) -> dict:
+        self._client = client
+        self._is_connected = True
+        self._first_data_event.clear()
         try:
-            frame = _build_frame(command, self._password, args)
-        except Exception as e:
-            LOGGER.error(">>> _send_command: Failed to build frame for command 0x%02X: %s", command, e, exc_info=True)
-            return False
+            _LOGGER.debug("%s: Starting service discovery...", self.name)
+            svcs = self._client.services
+            if not svcs or not svcs.services: raise BleakError("Failed to discover services")
+            
+            prana_service = svcs.get_service(SERVICE_UUID)
+            if not prana_service: raise BleakError(f"Prana service {SERVICE_UUID} not found.")
 
-        LOGGER.debug(">>> _send_command: Sending frame (full 20 bytes): %s", frame.hex())
-        try:
-            await self._client.write_gatt_char(UUID_RWN_CHARACTERISTIC, frame, response=False)
-            LOGGER.debug(">>> _send_command: Command 0x%02X sent successfully (20 bytes)", command)
+            self._control_char = prana_service.get_characteristic(CHARACTERISTIC_UUID_CTL)
+            if not self._control_char: raise BleakError(f"Prana control characteristic {CHARACTERISTIC_UUID_CTL} not found.")
+
+            _LOGGER.info("%s: Found Prana control characteristic.", self.name)
+
+            await self._client.start_notify(self._control_char, self._notification_callback)
+            _LOGGER.info("%s: Subscribed to notifications.", self.name)
+
+            _LOGGER.info("%s: Performing authorization handshake...", self.name)
+            await self._async_send_command_payload(AUTH_CMD_1)
             await asyncio.sleep(0.2)
-            return True
-        except BleakError as e:
-            LOGGER.error(">>> _send_command: BleakError sending command 0x%02X (20 bytes): %s", command, e)
-            self._handle_disconnect(self._client) # Let coordinator know
-            return False
-        except Exception as e:
-            LOGGER.error(">>> _send_command: Unexpected error sending command 0x%02X (20 bytes): %s", command, e, exc_info=True)
-            self._handle_disconnect(self._client) # Let coordinator know
-            return False
+            await self._async_send_command_payload(POLL_CMD)
+            _LOGGER.info("%s: Handshake complete. Waiting for initial status notification...", self.name)
 
+            await asyncio.wait_for(self._first_data_event.wait(), timeout=15)
+            
+            _LOGGER.info("%s: Initial status received successfully.", self.name)
+            return self._parsed_status
+            
+        except asyncio.TimeoutError:
+            _LOGGER.error("%s: Timed out waiting for data notification after handshake.", self.name)
+            await self.disconnect()
+            raise BleakError("Did not receive data after handshake")
+        except Exception:
+            await self.disconnect()
+            raise
 
-    # --- Public API Methods ---
+    async def async_get_status(self) -> dict:
+        if not self.is_connected(): raise BleakError("Not connected for polling")
+        self._parsed_status.clear()
+        self._first_data_event.clear()
+        await self._async_send_command_payload(POLL_CMD)
+        await asyncio.wait_for(self._first_data_event.wait(), timeout=10)
+        return self._parsed_status
 
-    async def authenticate(self) -> bool:
-        """Authenticate with the device using the explicit AUTH command."""
-        # Assumes lock is held by caller (_ensure_connected)
-        LOGGER.debug(">>> authenticate START for %s", self.address)
-        success = await self._send_command(PRANA_CMD_AUTH) # Use internal send
-        if success:
-            LOGGER.info(">>> authenticate: AUTH command sent successfully.")
-            await asyncio.sleep(0.5) # Keep short pause after auth send
-            LOGGER.debug(">>> authenticate END (sent ok)")
-            # Return True based on send success only. self._is_authenticated might be set later by response/parsing.
-            return True
-        else:
-            LOGGER.error(">>> authenticate: Failed to send AUTH command.")
-            LOGGER.debug(">>> authenticate END (send failed)")
-            return False
+    async def _async_send_command_payload(self, payload: bytes) -> None:
+        if not self.is_connected() or not self._client or not self._control_char:
+             raise BleakError("Cannot send command, not connected.")
+        async with self._write_lock:
+            _LOGGER.debug("%s: Sending command: %s", self.name, payload.hex())
+            await self._client.write_gatt_char(self._control_char, payload, response=True)
 
-    async def request_state(self) -> bool:
-        """Request the current state from the device AND attempt to read it directly."""
-        # Assumes lock is held by caller (_async_update_data)
-        LOGGER.debug(">>> request_state START for %s", self.address)
+    def is_connected(self) -> bool:
+        return self._is_connected and self._client is not None and self._client.is_connected
 
-        # Send the GET_STATE command first
-        send_success = await self._send_command(PRANA_CMD_GET_STATE)
-        if not send_success:
-            LOGGER.warning(">>> request_state: Failed to send GET_STATE command.")
-            return False # Return False if command send failed
+    async def disconnect(self) -> None:
+        _LOGGER.info("%s: Disconnecting...", self.name)
+        client = self._client
+        self._is_connected = False
+        self._client = None
+        self._control_char = None
+        if client and client.is_connected:
+            await client.disconnect()
 
-        # --- Attempt Direct Read ---
-        LOGGER.debug(">>> request_state: GET_STATE sent. Attempting direct read from %s", UUID_RWN_CHARACTERISTIC)
+    def _parse_status_data(self, raw: bytes) -> dict:
+        """Parse the raw status data based on decoder script results."""
+        def s16(data: bytes) -> int:
+            return int.from_bytes(data, 'little', signed=True)
         try:
-            # --- Timing Adjustment ---
-            await asyncio.sleep(1.0) # Increased delay to 1.0 second
-            # --- End Timing Adjustment ---
+            data = {
+                "power": bool(raw[9] & 0x01),
+                "heating": bool(raw[11] & 0x01),
+                "winter_mode": bool(raw[15] & 0x01),
+                "fan_lock": bool(raw[17] & 0x01),
+                
+                "inlet_speed": raw[41],
+                "outlet_speed": raw[43],
+                "current_speed": raw[41],
+                
+                "brightness": raw[29],
+                "display_mode": raw[31],
+                "fan_mode": raw[33],
+                
+                "humidity": raw[52],
+                
+                "temp_inlet_before": None,  # T1 - Unknown offset
+                "temp_outlet_before": None, # T2 - Unknown offset
+                "temp_inlet_after": s16(raw[55:57]) / 10.0,   # T3 - Strong match from decoder
+                "temp_outlet_after": s16(raw[8:10]) / 10.0,    # T4 - Weak match from decoder
+                
+                "co2": int.from_bytes(raw[19:21], 'little'), # Strong match from decoder
+                "voc": int.from_bytes(raw[1:3], 'little'), # Strong match from decoder
+                
+                "pressure": None, # Unknown offset
+            }
+            _LOGGER.info("Parsed data: %s", data)
+            return data
+        except (IndexError, Exception) as e:
+            _LOGGER.error("%s: Error parsing status data: %s. Data len: %d. Data: %s", self.name, e, len(raw), raw.hex())
+            return {}
 
-            if not self.is_connected or not self._client:
-                LOGGER.warning(">>> request_state: Disconnected before read attempt.")
-                return False
+    async def _async_send_button_command(self, command_byte: int, value_byte: Optional[int] = None) -> None:
+        payload_core_list = [CMD_PREFIX_BUTTON, command_byte]
+        if value_byte is not None: payload_core_list.append(value_byte)
+        payload = PACKET_HEADER + bytes(payload_core_list)
+        await self._async_send_command_payload(payload)
 
-            # Explicitly use UUID_RWN_CHARACTERISTIC for read
-            raw_data = await self._client.read_gatt_char(UUID_RWN_CHARACTERISTIC)
-            LOGGER.info(">>> request_state: Successfully read %d bytes: %s", len(raw_data), raw_data.hex())
+    async def async_set_power(self, state: bool) -> None: await self._async_send_button_command(CMD_POWER)
+    async def async_set_heating(self, state: bool) -> None: await self._async_send_button_command(CMD_HEATING)
+    async def async_set_winter_mode(self, state: bool) -> None: await self._async_send_button_command(CMD_WINTER_MODE)
+    async def async_set_fan_lock(self, state: bool) -> None: await self._async_send_button_command(CMD_FAN_LOCK)
+    
+    async def async_set_brightness(self, brightness: int) -> None:
+        target_brightness = max(0, min(10, int(brightness)))
+        current_brightness = self._parsed_status.get("brightness", 0)
+        if current_brightness == target_brightness: return
+        num_presses = (current_brightness - target_brightness) if current_brightness > target_brightness else (10 - current_brightness + target_brightness)
+        num_presses %= 10
+        if num_presses == 0 and current_brightness != target_brightness: num_presses = 10
+        for _ in range(num_presses):
+            await self._async_send_button_command(CMD_BRIGHTNESS)
+            await asyncio.sleep(0.25)
+            
+    async def async_set_fan_speed(self, speed: int) -> None:
+        target_speed = max(0, min(10, int(speed)))
+        current_speed = self._parsed_status.get("current_speed", 0)
+        if current_speed == target_speed: return
+        if target_speed == 0:
+            await self.async_turn_fan_on_off(False); return
+        if not self._parsed_status.get("power", False):
+            await self.async_set_power(True); await asyncio.sleep(0.5)
+        command = CMD_FANS_SPEED_UP if target_speed > current_speed else CMD_FANS_SPEED_DOWN
+        for _ in range(abs(target_speed - current_speed)):
+            await self._async_send_button_command(command)
+            await asyncio.sleep(0.25)
+            
+    async def async_turn_fan_on_off(self, turn_on: bool) -> None:
+        power = self._parsed_status.get("power", False)
+        speed = self._parsed_status.get("current_speed", 0)
+        is_on = power and speed > 0
+        if turn_on == is_on: return
+        if turn_on:
+            if not power: await self.async_set_power(True); await asyncio.sleep(0.5)
+            await self._async_send_button_command(CMD_FAN_IN_ON); await asyncio.sleep(0.1)
+            await self._async_send_button_command(CMD_FAN_OUT_ON)
+        else:
+            await self._async_send_button_command(CMD_FAN_IN_OFF); await asyncio.sleep(0.1)
+            await self._async_send_button_command(CMD_FAN_OUT_OFF)
 
-            # --- Parse the read data ---
-            if len(raw_data) >= 6 and raw_data[0] == PRANA_RESP_START_BYTE1 and raw_data[1] == PRANA_RESP_START_BYTE2:
-                 frame_len = raw_data[2]
-                 if frame_len == 0 or frame_len > (len(raw_data) - 4):
-                     LOGGER.warning(">>> request_state: Read data has invalid frame length byte: %d", frame_len)
-                     return False
+    async def async_set_select_option(self, entity_type: str, option_index: int) -> None:
+        if entity_type == "display_mode":
+            payload = bytes([0xBE, 0xEF, 0x0B, 0x01, option_index])
+        elif entity_type == "fan_mode":
+            payload = bytes([0xBE, 0xEF, 0x0B, 0x02, option_index])
+        else:
+            _LOGGER.error("Unknown select entity type: %s", entity_type)
+            return
+        await self._async_send_command_payload(payload)
 
-                 expected_total_len = 3 + frame_len + 1
-                 if len(raw_data) >= expected_total_len:
-                     payload = raw_data[3 : 3 + frame_len]
-                     received_checksum = raw_data[3 + frame_len]
-                     calculated_checksum = _calculate_checksum(payload)
-                     if received_checksum == calculated_checksum:
-                          cmd = payload[0]
-                          if cmd == PRANA_CMD_GET_STATE:
-                              LOGGER.debug(">>> request_state: Read data appears to be valid state response. Parsing...")
-                              self._parse_state_data(payload[1:]) # Parse and update _current_state
-                              return True # Indicate success (state updated via read)
-                          else:
-                              LOGGER.warning(">>> request_state: Read data has valid structure but unexpected command: 0x%02X", cmd)
-                     else:
-                          LOGGER.warning(">>> request_state: Read data checksum mismatch. Got %02X, Calc %02X", received_checksum, calculated_checksum)
-                 else:
-                     LOGGER.warning(">>> request_state: Read data incomplete frame. Expected %d, Got %d", expected_total_len, len(raw_data))
-            # --- Added check for all zeros ---
-            elif all(b == 0 for b in raw_data):
-                 LOGGER.warning(">>> request_state: Read data was all zeros. Possible auth issue or device error.")
-            # --- End added check ---
-            else:
-                LOGGER.warning(">>> request_state: Read data doesn't match expected response format: %s", raw_data.hex())
-
-            # If read succeeded but parsing failed or format was wrong, return False
-            LOGGER.warning(">>> request_state: Read succeeded but data parsing failed or format invalid.")
-            return False
-
-        except BleakError as e:
-            LOGGER.error(">>> request_state: BleakError during read_gatt_char: %s", e)
-            self._handle_disconnect(self._client) # Assume connection issue on read error
-            return False
-        except Exception as e:
-            LOGGER.error(">>> request_state: Unexpected error during read_gatt_char: %s", e, exc_info=True)
-            return False
-
-    # --- Control Methods (acquire lock, ensure connected, check auth, send) ---
-    async def set_power(self, power: bool) -> bool:
-        """Turn the device on or off."""
-        LOGGER.debug("Setting power to %s for %s", power, self.address)
-        async with self._lock:
-            if not await self._ensure_connected(): return False
-            if not self._is_authenticated:
-                 LOGGER.warning("Attempted to set power but not authenticated.")
-                 return False
-            return await self._send_command(PRANA_CMD_SET_POWER, [int(power)])
-
-    async def set_speed(self, speed: int) -> bool:
-        """Set the fan speed (1-10 range assumed)."""
-        clamped_speed = max(1, min(10, speed))
-        LOGGER.debug("Setting speed to %d for %s", clamped_speed, self.address)
-        async with self._lock:
-            if not await self._ensure_connected(): return False
-            if not self._is_authenticated:
-                 LOGGER.warning("Attempted to set speed but not authenticated.")
-                 return False
-            return await self._send_command(PRANA_CMD_SET_SPEED, [clamped_speed])
-
-    async def set_mode(self, mode: PranaMode) -> bool:
-        """Set the operating mode."""
-        LOGGER.debug("Setting mode to %s (%d) for %s", mode.name, mode.value, self.address)
-        async with self._lock:
-            if not await self._ensure_connected(): return False
-            if not self._is_authenticated:
-                 LOGGER.warning("Attempted to set mode but not authenticated.")
-                 return False
-            return await self._send_command(PRANA_CMD_SET_MODE, [mode.value])
-
-    async def set_brightness(self, brightness: int) -> bool:
-        """Set the display brightness (0-100 range assumed)."""
-        clamped_brightness = max(0, min(100, brightness))
-        LOGGER.debug("Setting brightness to %d for %s", clamped_brightness, self.address)
-        async with self._lock:
-            if not await self._ensure_connected(): return False
-            if not self._is_authenticated:
-                 LOGGER.warning("Attempted to set brightness but not authenticated.")
-                 return False
-            return await self._send_command(PRANA_CMD_SET_BRIGHTNESS, [clamped_brightness])
-
-    async def reset_filter(self) -> bool:
-        """Reset the filter timer."""
-        LOGGER.debug("Resetting filter for %s", self.address)
-        async with self._lock:
-            if not await self._ensure_connected(): return False
-            if not self._is_authenticated:
-                 LOGGER.warning("Attempted to reset filter but not authenticated.")
-                 return False
-            return await self._send_command(PRANA_CMD_RESET_FILTER)
-
-    async def get_current_state(self) -> Dict[str, Any]:
-         """Return the last known state (updated by read or notification)."""
-         return self._current_state.copy()
+    def get_parsed_status(self) -> Dict[str, Any]:
+        return self._parsed_status.copy()

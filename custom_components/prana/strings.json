@@ -2,40 +2,36 @@
     "config": {
         "step": {
             "user": {
-                "title": "Select Prana Device",
-                "description": "If your device is not discovered automatically, you can enter its Bluetooth MAC address manually.",
+                "title": "Add Prana Recuperator Manually",
+                "description": "Enter the MAC address of your Prana device.\nEnsure Bluetooth is enabled on your Home Assistant host and the Prana device is powered on and nearby.{discovered_list_if_any}",
                 "data": {
-                    "address": "Device Address (MAC)"
-                }
-            },
-             "user_select": {
-                "title": "Select Prana Device",
-                "description": "Choose the discovered Prana device to add.",
-                "data": {
-                    "address": "Device"
-                }
-            },
-            "authenticate": {
-                "title": "Authentication",
-                "description": "Enter the password for your Prana device '{name}'. The default is '0000'.",
-                "data": {
-                    "password": "[%key:common::config_flow::data::password%]"
+                    "address": "MAC Address"
                 }
             },
             "bluetooth_confirm": {
-                "title": "Confirm Discovered Device",
-                "description": "Do you want to set up the Prana device named '{name}' at address {address}?"
+                "title": "Confirm Prana Device",
+                "description": "Do you want to add the Prana device named '{name}' at address '{address}'?"
             }
         },
         "error": {
-            "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-            "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-            "unknown": "[%key:common::config_flow::error::unknown%]",
-             "abort_already_configured": "Device is already configured."
+            "invalid_mac": "The MAC address format is invalid.",
+            "cannot_connect": "Unable to connect to the device. Please check the MAC address and ensure the device is powered on and in range.",
+            "unknown": "An unknown error occurred.",
+            "internal_error_no_discovery": "Internal error: No discovery information available for Bluetooth confirmation."
         },
         "abort": {
-            "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
-            "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
+            "already_configured": "This Prana device is already configured.",
+            "no_devices_found": "No Prana devices found. Ensure Bluetooth is enabled and the device is nearby. You can also try adding manually." 
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Prana Recuperator Options",
+                "data": {
+                    "scan_interval": "Scan Interval (seconds)"
+                }
+            }
         }
     }
 }

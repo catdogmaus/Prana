@@ -1,158 +1,155 @@
-"""Fan platform for Prana Integration."""
+"""Fan entity for Prana HASS integration."""
 import logging
 import math
 from typing import Any, Optional
 
-from homeassistant.components.fan import FanEntity, FanEntityFeature
+from homeassistant.components.fan import (
+    FanEntity,
+    FanEntityDescription,
+    FanEntityFeature,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.percentage import (
-    int_states_in_range,
     percentage_to_ranged_value,
     ranged_value_to_percentage,
 )
 
-from .const import DOMAIN, LOGGER, MODE_MAP, PranaMode
-from . import PranaDataUpdateCoordinator 
-from .entity import PranaEntity
-from .api import PranaBLEDevice
+from .api import PranaApi
+from .const import DOMAIN, FAN_SPEED_COUNT
+from .entity import PranaBaseEntity
 
-# Define speed range based on ESPHome implementation (seems to be 1-10)
-SPEED_RANGE = (1, 10)
+_LOGGER = logging.getLogger(__name__)
+
+# Using a single fan entity to control both Inlet/Outlet fans together
+# as per ESPHome's "In/Out fans" behavior.
+FAN_DESCRIPTION = FanEntityDescription(
+    key="combined_fan", # Internal key
+    name="Fan",        # This will be prefixed by device name by PranaBaseEntity
+    icon="mdi:fan",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Prana fan based on a config entry."""
+    """Set up Prana fan entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: PranaDataUpdateCoordinator = data["coordinator"]
-    api: PranaBLEDevice = data["api"]
+    api: PranaApi = data["api"]
+    coordinator = data["coordinator"]
+    device_address = entry.data["address"]
 
-    async_add_entities([PranaFanEntity(coordinator, api)])
-
-
-class PranaFanEntity(PranaEntity, FanEntity):
-    """Representation of a Prana fan entity."""
-
-    _attr_supported_features = FanEntityFeature.SET_SPEED # Add PRESET_MODE if modes handled here
-    _attr_name = None # Use device name as fan name
-    _attr_speed_count = int_states_in_range(SPEED_RANGE)
+    entities = [PranaFanEntity(coordinator, api, device_address, FAN_DESCRIPTION)]
+    async_add_entities(entities)
 
 
-    def __init__(
-        self,
-        coordinator: PranaDataUpdateCoordinator,
-        api: PranaBLEDevice,
-    ) -> None:
-        """Initialize the fan entity."""
-        super().__init__(coordinator, api)
-        self._attr_unique_id = f"{api.address}_fan"
-        # Set initial state
-         # self._handle_coordinator_update()
+class PranaFanEntity(PranaBaseEntity, FanEntity):
+    """Representation of a Prana Fan."""
 
+    _attr_supported_features = FanEntityFeature.SET_SPEED
+    _speed_range = (1, FAN_SPEED_COUNT)  # Min speed 1, Max speed 10
+
+    def __init__(self, coordinator, api: PranaApi, device_address: str, description: FanEntityDescription) -> None:
+        """Initialize the fan."""
+        # The key for fan state is 'current_speed' and 'power' from parsed data.
+        # We use description.key for unique_id and entity_key for PranaBaseEntity.
+        super().__init__(coordinator, api, device_address, description.key, description.name)
+        self.entity_description = description
+        self._attr_name = description.name # Use the descriptive name
 
     @property
     def is_on(self) -> bool | None:
         """Return true if the fan is on."""
         if self.coordinator.data:
-            # Fan is on if the main power switch is on
-            return self.coordinator.data.get("power")
+            power_on = self.coordinator.data.get("power", False)
+            # Fan is on if main power is on AND speed is > 0
+            # Or, if main power is on and any of the fan sub-switches (inlet/outlet) are on.
+            # ESPHome implies fan is on if speed > 0 and main power is on.
+            current_speed = self.coordinator.data.get("current_speed", 0)
+            return bool(power_on and current_speed > 0)
         return None
 
     @property
-    def percentage(self) -> int | None:
+    def percentage(self) -> Optional[int]:
         """Return the current speed percentage."""
-        if self.coordinator.data and self.coordinator.data.get("speed") is not None:
-            speed = self.coordinator.data.get("speed")
-            # Ensure speed is within the expected range before converting
-            if SPEED_RANGE[0] <= speed <= SPEED_RANGE[1]:
-                 return ranged_value_to_percentage(SPEED_RANGE, speed)
-            elif speed == 0: # Treat speed 0 as off? Or lowest percentage?
-                 return 0 # Represent as 0%
-        return None
+        if self.coordinator.data and self.is_on: # Only return percentage if on
+            current_speed = self.coordinator.data.get("current_speed")
+            if current_speed is not None and current_speed > 0:
+                return ranged_value_to_percentage(self._speed_range, current_speed)
+        return 0 # Off or unknown speed
 
     @property
     def speed_count(self) -> int:
         """Return the number of speeds the fan supports."""
-        return int_states_in_range(SPEED_RANGE)
+        return FAN_SPEED_COUNT
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """Set the speed percentage of the fan."""
+        """Set the speed of the fan."""
         if percentage == 0:
-            # If setting percentage to 0, turn off the fan
             await self.async_turn_off()
             return
 
-        # Convert percentage to Prana speed value (1-10)
-        prana_speed = math.ceil(percentage_to_ranged_value(SPEED_RANGE, percentage))
-        # Ensure speed is at least the minimum value when turning on/setting > 0%
-        prana_speed = max(SPEED_RANGE[0], prana_speed)
+        # Ensure main power is on before setting speed
+        if not self.api.get_parsed_status().get("power", False):
+            _LOGGER.info("%s: Main power is off, turning it on before setting fan speed.", self.api.name)
+            if not await self.api.async_set_power(True):
+                _LOGGER.error("%s: Failed to turn on main power for fan.", self.api.name)
+                return
+            await self.coordinator.async_request_refresh() # Refresh to get power state
+            await asyncio.sleep(0.5) # Give time for power on to reflect
 
-        LOGGER.debug("Setting fan %s speed to %d (%d%%)", self._api.name, prana_speed, percentage)
-        if await self._api.set_speed(prana_speed):
-            # Optimistically update state
-            self._attr_percentage = percentage
+        speed_value = math.ceil(percentage_to_ranged_value(self._speed_range, percentage))
+        _LOGGER.debug("%s: Setting fan speed to %d (percentage %d)", self.api.name, speed_value, percentage)
+        
+        if await self.api.async_set_fan_speed(speed_value):
+            if self.coordinator.data:
+                 self.coordinator.data["current_speed"] = speed_value # Optimistic
             self.async_write_ha_state()
-            # Request coordinator refresh to confirm state
             await self.coordinator.async_request_refresh()
-        else:
-            LOGGER.error("Failed to set speed for %s", self._api.name)
+
 
     async def async_turn_on(
         self,
-        percentage: int | None = None,
-        preset_mode: str | None = None,
+        percentage: Optional[int] = None,
+        preset_mode: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        """Turn the fan on."""
-        # If percentage is specified, set it. Otherwise, just turn power on.
-        if percentage is not None:
-            await self.async_set_percentage(percentage)
-        else:
-            # Just turn power on, device might resume last speed
-            LOGGER.debug("Turning on fan %s (power only)", self._api.name)
-            if await self._api.set_power(True):
-                 # Optimistically update state
-                 self._attr_is_on = True
-                 self.async_write_ha_state()
-                 # Request coordinator refresh to confirm state
-                 await self.coordinator.async_request_refresh()
-            else:
-                 LOGGER.error("Failed to turn on %s", self._api.name)
+        """Turn on the fan."""
+        # Ensure main power is on
+        if not self.api.get_parsed_status().get("power", False):
+            _LOGGER.info("%s: Main power is off, turning it on for fan.", self.api.name)
+            if not await self.api.async_set_power(True):
+                _LOGGER.error("%s: Failed to turn on main power for fan.", self.api.name)
+                return
+            # Optimistically update power state or wait for refresh
+            if self.coordinator.data: self.coordinator.data["power"] = True
+            self.async_write_ha_state()
+            await self.coordinator.async_request_refresh()
+            await asyncio.sleep(0.5) # Give time for power on
+
+
+        if await self.api.async_turn_fan_on_off(True): # Send generic "fan on"
+            # If percentage is provided, set it. Otherwise, fan turns on to last/default speed.
+            if percentage is not None:
+                await self.async_set_percentage(percentage)
+            else: # If no speed given, turn on to speed 1 or last known speed if >0
+                current_api_speed = self.api.get_parsed_status().get("current_speed", 0)
+                if current_api_speed == 0:
+                    await self.async_set_percentage(ranged_value_to_percentage(self._speed_range, 1)) # Default to speed 1
+                else: # Already on at some speed, ensure HA state reflects this
+                    if self.coordinator.data: self.coordinator.data["current_speed"] = current_api_speed
+                    self.async_write_ha_state()
+
+            await self.coordinator.async_request_refresh()
 
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the fan off."""
-        LOGGER.debug("Turning off fan %s (power)", self._api.name)
-        if await self._api.set_power(False):
-            # Optimistically update state
-            self._attr_is_on = False
-            self._attr_percentage = 0 # Explicitly set percentage to 0 when off
+        if await self.api.async_turn_fan_on_off(False):
+            if self.coordinator.data:
+                 self.coordinator.data["current_speed"] = 0 # Optimistic
             self.async_write_ha_state()
-            # Request coordinator refresh to confirm state
             await self.coordinator.async_request_refresh()
-        else:
-            LOGGER.error("Failed to turn off %s", self._api.name)
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        is_on_updated = None
-        percentage_updated = None
-        if self.coordinator.data:
-             is_on_updated = self.coordinator.data.get("power")
-             speed = self.coordinator.data.get("speed")
-             if speed is not None and is_on_updated: # Only calculate percentage if on and speed known
-                 if SPEED_RANGE[0] <= speed <= SPEED_RANGE[1]:
-                      percentage_updated = ranged_value_to_percentage(SPEED_RANGE, speed)
-                 elif speed == 0:
-                      percentage_updated = 0 # Or should speed 0 mean something else?
-             elif not is_on_updated:
-                  percentage_updated = 0 # Set percentage to 0 if power is off
-
-        self._attr_is_on = is_on_updated
-        self._attr_percentage = percentage_updated
-        self.async_write_ha_state()

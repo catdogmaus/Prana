@@ -1,232 +1,162 @@
-"""Config flow for Prana Integration."""
-import asyncio
+"""Config flow for Prana HASS integration."""
 import logging
+import re # For MAC address validation
 from typing import Any, Dict, Optional
 
 import voluptuous as vol
-from bleak import BleakClient, BleakError
-from bleak.backends.device import BLEDevice
+# from bleak.backends.device import BLEDevice # Not strictly needed here
+# from bleak.exc import BleakError # Not strictly needed here
 
-from homeassistant import config_entries, exceptions
+from homeassistant import config_entries
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
-    async_ble_device_from_address,
     async_discovered_service_info,
 )
-from homeassistant.const import CONF_ADDRESS, CONF_PASSWORD
-from homeassistant.core import callback
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.device_registry import format_mac
 
-# Corrected imports from local modules
 from .const import (
     DOMAIN,
-    DEFAULT_PASSWORD,
-    LOGGER, # Use LOGGER from const.py
-    UUID_PRANA_SERVICE,
-    UUID_RWN_CHARACTERISTIC, # Use the correct constant name
-    # UUID_PRANA_WRITE, # Not needed here
-    # PRANA_CMD_AUTH, # Not needed here
-)
-# Import necessary function for command building is NOT needed here
-# from .api import _build_frame
-
-# Schema for user step (address selection/entry)
-USER_ADDRESS_SCHEMA = vol.Schema(
-    {vol.Required(CONF_ADDRESS): str}
+    SERVICE_UUID,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    MODEL_NAME
 )
 
-# Schema for authentication step
-AUTH_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_PASSWORD, default=DEFAULT_PASSWORD): str,
-    }
-)
+_LOGGER = logging.getLogger(__name__)
 
 
-# --- Start: Minimal _validate_auth (Connect & Discover Only) ---
-async def _validate_auth(hass, address: str, password: str) -> bool:
-    """Validate connection and service/characteristic discovery ONLY."""
-    # NOTE: This version only checks connection and characteristic existence.
-    # It does NOT send any command. Password validity is checked post-setup.
-    LOGGER.debug("Attempting validation (connect & discover only) for %s", address)
-    ble_device = async_ble_device_from_address(hass, address, connectable=True)
-    if not ble_device:
-        LOGGER.error("Device not found at address %s", address)
-        raise CannotConnect("Device not found")
-
-    # Basic password format check
-    if not (isinstance(password, str) and len(password) == 4 and password.isdigit()):
-         LOGGER.error("Invalid password format provided: must be 4 digits.")
-         raise InvalidAuth("Password must be 4 digits")
-
-    client = BleakClient(ble_device)
-    did_connect = False
-    try:
-        await client.connect(timeout=15.0)
-        did_connect = True
-        LOGGER.info("Connected for validation. Checking services/characteristics...")
-
-        # Check for service
-        service = client.services.get_service(UUID_PRANA_SERVICE)
-        if not service:
-            LOGGER.error("Prana service %s not found!", UUID_PRANA_SERVICE)
-            raise CannotConnect("Required service missing")
-
-        # Check for characteristic
-        rwn_char = service.get_characteristic(UUID_RWN_CHARACTERISTIC)
-        if not rwn_char:
-             LOGGER.error("Prana R/W/Notify characteristic %s not found!", UUID_RWN_CHARACTERISTIC)
-             raise CannotConnect("Required characteristic missing")
-
-        LOGGER.info("Service and Characteristic found. Validation PASSED.")
-        # Success based only on connect/discovery.
-        return True
-
-    except BleakError as err:
-        LOGGER.error("BleakError during validation for %s: %s", address, err)
-        raise CannotConnect(f"Connection failed: {err}") from err
-    except Exception as err:
-        LOGGER.error("Unexpected error during validation for %s: %s", address, err, exc_info=True)
-        raise CannotConnect(f"Unexpected error: {err}") from err
-    finally:
-        if did_connect and client.is_connected:
-            LOGGER.debug("Disconnecting after validation...")
-            await client.disconnect()
-        elif did_connect and not client.is_connected:
-             LOGGER.debug("Client already disconnected before finally block in validation.")
-        else:
-             LOGGER.debug("Connection never established during validation.")
-        LOGGER.debug("Validation finished for %s", address)
-# --- End: Minimal _validate_auth ---
-
-
-# ... (Rest of PranaConfigFlow class as provided before) ...
 class PranaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Prana Integration."""
+    """Handle a config flow for Prana HASS."""
 
     VERSION = 1
+    # CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL # Defined in manifest.json is enough
 
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovery_info: Optional[BluetoothServiceInfoBleak] = None
-        self._discovered_device: Optional[BLEDevice] = None
-        self._discovered_devices: Dict[str, str] = {}
-        self._address: Optional[str] = None
-        self._password_to_save: Optional[str] = None # To store password between steps
 
-    async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> FlowResult:
+    async def async_step_bluetooth(
+        self, discovery_info: BluetoothServiceInfoBleak
+    ) -> FlowResult:
         """Handle the bluetooth discovery step."""
-        LOGGER.debug("Discovered Prana device via Bluetooth: %s", discovery_info)
-        await self.async_set_unique_id(discovery_info.address)
-        self._abort_if_unique_id_configured(updates={CONF_ADDRESS: discovery_info.address})
+        _LOGGER.debug("Bluetooth discovery: Found Prana device: %s, %s", discovery_info.name, discovery_info.address)
+        await self.async_set_unique_id(format_mac(discovery_info.address))
+        self._abort_if_unique_id_configured()
 
         self._discovery_info = discovery_info
-        self._address = discovery_info.address
-        self.context["title_placeholders"] = {"name": discovery_info.name or discovery_info.address}
+        device_name = discovery_info.name if discovery_info.name else f"{MODEL_NAME} {discovery_info.address[-5:].replace(':', '')}"
+        
+        self.context["title_placeholders"] = {"name": device_name, "address": discovery_info.address}
+        return await self.async_step_bluetooth_confirm()
 
-        return await self.async_step_authenticate()
+    async def async_step_bluetooth_confirm(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Confirm discovery."""
+        if user_input is not None:
+            if not self._discovery_info:
+                 return self.async_abort(reason="internal_error_no_discovery")
+            
+            return self.async_create_entry(
+                title=self.context["title_placeholders"]["name"], 
+                data={CONF_ADDRESS: self._discovery_info.address}
+            )
+
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            description_placeholders=self.context.get("title_placeholders", {"name": "Unknown Prana Device", "address": "N/A"}),
+        )
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Handle the user initiating the flow."""
-        if user_input is not None:
-             self._address = user_input["address"]
-             await self.async_set_unique_id(self._address, raise_on_progress=False)
-             self._abort_if_unique_id_configured()
-
-             device_name = self._address
-             if self._discovered_devices and self._address in self._discovered_devices:
-                 device_name = self._discovered_devices[self._address]
-             else:
-                 ble_device = async_ble_device_from_address(self.hass, self._address, connectable=True)
-                 if ble_device:
-                      device_name = ble_device.name or self._address
-             self.context["title_placeholders"] = {"name": device_name}
-
-             return await self.async_step_authenticate()
-
-        current_addresses = self._async_current_ids()
-        self._discovered_devices.clear()
-        for discovery_info in async_discovered_service_info(self.hass, connectable=True):
-            address = discovery_info.address
-            if address in current_addresses or address in self._discovered_devices:
-                continue
-            if UUID_PRANA_SERVICE.lower() in [uuid.lower() for uuid in discovery_info.service_uuids]:
-                 self._discovered_devices[address] = (discovery_info.name or discovery_info.address)
-
-        if not self._discovered_devices:
-             LOGGER.debug("No Prana devices discovered, showing manual address entry form.")
-             return self.async_show_form(
-                 step_id="user",
-                 data_schema=USER_ADDRESS_SCHEMA,
-                 errors=None
-             )
-
-        LOGGER.debug("Discovered Prana devices: %s", self._discovered_devices)
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_ADDRESS): vol.In(self._discovered_devices)}
-            ),
-             errors=None
-        )
-
-    async def async_step_authenticate(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Handle the authentication step (collect password)."""
+        """Handle the user initiated flow (manual MAC address entry)."""
         errors: Dict[str, str] = {}
-        if not self._address:
-            return self.async_abort(reason="unknown")
 
         if user_input is not None:
-            password = user_input[CONF_PASSWORD]
-            try:
-                # Attempt the minimal validation (connect & discover only)
-                await _validate_auth(self.hass, self._address, password)
-
-                LOGGER.info("Minimal validation successful, creating entry for %s", self._address)
-
-                device_name = self._address
-                if self._discovery_info and self._discovery_info.address == self._address:
-                     device_name = self._discovery_info.name or self._address
-                elif self._discovered_devices and self._address in self._discovered_devices:
-                     device_name = self._discovered_devices[self._address]
-                else:
-                     ble_device = async_ble_device_from_address(self.hass, self._address, connectable=True)
-                     if ble_device:
-                          device_name = ble_device.name or self._address
-
+            address = user_input[CONF_ADDRESS].strip()
+            
+            if not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", address, re.IGNORECASE) and \
+               not re.match(r"^[0-9A-Fa-f]{12}$", address, re.IGNORECASE):
+                errors["base"] = "invalid_mac"
+            else:
+                normalized_mac = format_mac(address)
+                await self.async_set_unique_id(normalized_mac, raise_on_progress=False)
+                self._abort_if_unique_id_configured(updates={CONF_ADDRESS: normalized_mac})
+                
+                device_name = f"{MODEL_NAME} {normalized_mac[-5:].replace(':', '')}"
+                
                 return self.async_create_entry(
-                    title=device_name,
-                    data={
-                        CONF_ADDRESS: self._address,
-                        CONF_PASSWORD: password,
-                    },
+                    title=device_name, 
+                    data={CONF_ADDRESS: normalized_mac}
                 )
 
-            except CannotConnect as e:
-                LOGGER.warning("Cannot connect during minimal validation: %s", e)
-                errors["base"] = "cannot_connect"
-            except InvalidAuth as e: # Keep for password format check
-                LOGGER.warning("Invalid auth during minimal validation: %s", e)
-                errors["base"] = "invalid_auth"
-            except Exception:
-                LOGGER.exception("Unexpected exception during authentication step")
-                errors["base"] = "unknown"
+        # Prepare dynamic part for the description placeholder
+        discovered_prana_devices_info_list = []
+        current_configured_addresses = self._async_current_ids()
 
-        name_placeholder = self.context.get("title_placeholders", {}).get("name", self._address)
+        try:
+            for discovery in async_discovered_service_info(self.hass, connectable=True): # connectable=True helps filter
+                if SERVICE_UUID.lower() in [uuid.lower() for uuid in discovery.service_uuids]:
+                    if discovery.address not in current_configured_addresses:
+                        name = discovery.name if discovery.name else "Unknown Prana"
+                        discovered_prana_devices_info_list.append(f"- {name} ({discovery.address})")
+        except Exception as e:
+            _LOGGER.warning("Error during Bluetooth discovery scan in config flow: %s", e)
+
+        discovered_list_text = ""
+        if discovered_prana_devices_info_list:
+            discovered_list_text = (
+                "\n\n**Discovered Prana devices (you can copy the MAC address from here):**\n" 
+                + "\n".join(discovered_prana_devices_info_list)
+            )
+        else:
+            discovered_list_text = (
+                "\n\nNo Prana devices were automatically discovered nearby at this moment. "
+                "You can still try adding your device if you know its MAC address."
+            )
+        
+        # Use description_placeholders. The actual text will come from strings.json
+        # The key "discovered_list_if_any" will be replaced by the value of discovered_list_text
         return self.async_show_form(
-            step_id="authenticate",
-            data_schema=AUTH_SCHEMA,
-            description_placeholders={"name": name_placeholder},
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_ADDRESS, default=""): str
+            }),
             errors=errors,
+            description_placeholders={"discovered_list_if_any": discovered_list_text}
         )
 
-# Custom Exceptions
-class CannotConnect(exceptions.HomeAssistantError):
-    """Error to indicate we cannot connect."""
+    @staticmethod
+    @config_entries.HANDLERS.register("options")
+    async def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
+        return PranaOptionsFlowHandler(config_entry)
 
-class InvalidAuth(exceptions.HomeAssistantError):
-    """Error to indicate there is invalid auth."""
+
+class PranaOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle Prana options."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage Prana options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options_schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_SCAN_INTERVAL,
+                    default=self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                ): vol.All(vol.Coerce(int), vol.Range(min=10, max=3600)),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=options_schema)

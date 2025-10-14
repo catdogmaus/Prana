@@ -1,5 +1,5 @@
-"""Sensor platform for Prana Integration."""
-from typing import Optional
+"""Sensor entities for Prana HASS integration."""
+import logging
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,198 +10,126 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
-    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-    EntityCategory,
+    UnitOfPressure,
     UnitOfTemperature,
+    CONCENTRATION_PARTS_PER_BILLION,
     CONCENTRATION_PARTS_PER_MILLION,
-    # --- Start: Import Fix ---
-    # TIME_DAYS is no longer directly in const
-    UnitOfTime, # Import the Enum instead
-    # --- End: Import Fix ---
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
 
-# Import bluetooth helper from HA
-from homeassistant.components import bluetooth
-
+from .api import PranaApi
 from .const import DOMAIN
-from . import PranaDataUpdateCoordinator 
-from .entity import PranaEntity
-from .api import PranaBLEDevice
+from .entity import PranaBaseEntity
 
-# Sensor descriptions
-SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+_LOGGER = logging.getLogger(__name__)
+
+SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
-        key="temp_in",
-        name="Indoor Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
+        key="temp_inlet_before",
+        name="Temperature Outside Inlet",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
-        key="temp_out",
-        name="Outdoor Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
+        key="temp_outlet_before",
+        name="Temperature Inside Outlet",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
-     SensorEntityDescription(
-        key="temp_exhaust",
-        name="Exhaust Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
+    SensorEntityDescription(
+        key="temp_inlet_after",
+        name="Temperature Inside Inlet",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
     ),
-     SensorEntityDescription(
-        key="temp_supply",
-        name="Supply Temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
+    SensorEntityDescription(
+        key="temp_outlet_after",
+        name="Temperature Outside Outlet",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
     ),
     SensorEntityDescription(
         key="humidity",
         name="Humidity",
-        device_class=SensorDeviceClass.HUMIDITY,
         native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
         key="co2",
         name="CO2",
-        device_class=SensorDeviceClass.CO2,
         native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        device_class=SensorDeviceClass.CO2,
         state_class=SensorStateClass.MEASUREMENT,
     ),
-     SensorEntityDescription(
+    SensorEntityDescription(
         key="voc",
         name="VOC",
-        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_BILLION,
+        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
         state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=0,
     ),
     SensorEntityDescription(
-        key="filter_timer_days",
-        name="Filter Remaining Time",
-        icon="mdi:filter-variant",
-        # --- Start: Import Fix ---
-        native_unit_of_measurement=UnitOfTime.DAYS, # Use Enum member
-        # --- End: Import Fix ---
+        key="pressure",
+        name="Pressure",
+        native_unit_of_measurement=UnitOfPressure.MMHG,
+        device_class=SensorDeviceClass.PRESSURE,
         state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-     SensorEntityDescription(
-        key="winter_mode_active",
-        name="Winter Mode Active",
-        icon="mdi:snowflake",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.ENUM,
-        options=["on", "off"],
-     ),
-      SensorEntityDescription(
-        key="auto_mode_active",
-        name="Auto Mode Active",
-        icon="mdi:cogs",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.ENUM,
-        options=["on", "off"],
-     ),
-    SensorEntityDescription(
-        key="rssi",
-        name="Signal Strength",
-        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
-        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
     ),
 )
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Prana sensors based on a config entry."""
+    """Set up Prana sensor entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: PranaDataUpdateCoordinator = data["coordinator"]
-    api: PranaBLEDevice = data["api"]
+    api: PranaApi = data["api"]
+    coordinator = data["coordinator"]
+    device_address = entry.data["address"]
 
     entities = [
-        PranaSensorEntity(coordinator, api, description)
-        for description in SENSOR_DESCRIPTIONS
-        # Add sensors only if the key exists in the initial data? Optional.
-        # if coordinator.data and description.key in coordinator.data
+        PranaSensorEntity(coordinator, api, device_address, description)
+        for description in SENSOR_TYPES
     ]
-
-    # Add RSSI sensor separately as it comes from bluetooth stack
-    # rssi_entity = PranaSensorEntity(coordinator, api, next(d for d in SENSOR_DESCRIPTIONS if d.key == "rssi"))
-    # entities.append(rssi_entity) # Simpler to handle RSSI within the class directly
-
     async_add_entities(entities)
 
 
-class PranaSensorEntity(PranaEntity, SensorEntity):
-    """Representation of a Prana sensor."""
+class PranaSensorEntity(PranaBaseEntity, SensorEntity):
+    """Representation of a Prana Sensor."""
 
-    def __init__(
-        self,
-        coordinator: PranaDataUpdateCoordinator,
-        api: PranaBLEDevice,
-        description: SensorEntityDescription,
-    ) -> None:
+    def __init__(self, coordinator, api: PranaApi, device_address: str, description: SensorEntityDescription) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, api)
+        super().__init__(coordinator, api, device_address, description.key, description.name)
         self.entity_description = description
-        self._attr_unique_id = f"{api.address}_{description.key}"
-        # Set initial state
-         # self._handle_coordinator_update() # Call this to set initial value
+        # No need to set self._attr_name here, PranaBaseEntity handles it
 
     @property
-    def native_value(self) -> StateType:
+    def native_value(self) -> float | int | None:
         """Return the state of the sensor."""
-        # Handle RSSI separately
-        if self.entity_description.key == "rssi":
-            service_info = bluetooth.async_last_service_info(self.hass, self._api.address, connectable=True)
-            return service_info.rssi if service_info else None
-
-        # Handle other sensors based on coordinator data
-        if self.coordinator.data and self.entity_description.key in self.coordinator.data:
-            value = self.coordinator.data.get(self.entity_description.key)
-
-            # Handle boolean sensors mapped to ENUM device class
-            if self.entity_description.key in ["winter_mode_active", "auto_mode_active"]:
-                 return "on" if value else "off"
-
-            # Return parsed value, could be None if parsing failed or key missing
-            return value
-
-        # Return None if no data or key missing
+        if self.coordinator.data and self._entity_key in self.coordinator.data:
+            value = self.coordinator.data[self._entity_key]
+            
+            # --- FIX for TypeError ---
+            # If the value from the parser is None, return None immediately.
+            if value is None:
+                return None
+            
+            # This logic is now safe because `value` is guaranteed not to be None.
+            try:
+                # Check if it's already a number (int or float)
+                if isinstance(value, (int, float)):
+                    return value
+                # If not, attempt to convert from string representation
+                return float(value) if '.' in str(value) else int(value)
+            except (ValueError, TypeError):
+                _LOGGER.warning("Could not parse sensor value for %s: %s", self.entity_id, value)
+                return None
         return None
-
-    # Override _handle_coordinator_update to set the internal state correctly
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        # Update RSSI if this is the RSSI sensor
-        if self.entity_description.key == "rssi":
-            service_info = bluetooth.async_last_service_info(self.hass, self._api.address, connectable=True)
-            self._attr_native_value = service_info.rssi if service_info else None
-        # Update other sensors from coordinator data
-        elif self.coordinator.data and self.entity_description.key in self.coordinator.data:
-             value = self.coordinator.data.get(self.entity_description.key)
-             # Handle boolean sensors mapped to ENUM device class
-             if self.entity_description.key in ["winter_mode_active", "auto_mode_active"]:
-                  self._attr_native_value = "on" if value else "off"
-             else:
-                  self._attr_native_value = value
-        else:
-             # No data for this sensor in the coordinator update
-             self._attr_native_value = None
-
-        # Mark the state as updated
-        self.async_write_ha_state()

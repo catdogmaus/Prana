@@ -1,27 +1,32 @@
-"""Select platform for Prana Integration."""
+"""Select entities for Prana HASS integration."""
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, LOGGER, MODE_MAP, MODE_LIST, PranaMode
-from . import PranaDataUpdateCoordinator 
-from .entity import PranaEntity
-from .api import PranaBLEDevice
+from .api import PranaApi
+from .const import DOMAIN, DISPLAY_MODE_OPTIONS, FAN_MODE_OPTIONS
+from .entity import PranaBaseEntity
 
-# Select Description
-SELECT_DESCRIPTION = SelectEntityDescription(
-    key="mode",
-    name="Mode",
-    icon="mdi:cog-outline", # Or mdi:air-filter ?
-    options=MODE_LIST, # Use the list of friendly names
+_LOGGER = logging.getLogger(__name__)
+
+SELECT_TYPES: tuple[SelectEntityDescription, ...] = (
+    SelectEntityDescription(
+        key="display_mode",
+        name="Display Mode",
+        icon="mdi:unfold-more-vertical", # Or mdi:television-guide
+        options=DISPLAY_MODE_OPTIONS,
+    ),
+    SelectEntityDescription(
+        key="fan_mode",
+        name="Fan Mode",
+        icon="mdi:fan-auto",
+        options=FAN_MODE_OPTIONS,
+    ),
 )
-
-# Reverse map for friendly name to enum
-MODE_NAME_TO_ENUM = {v: k for k, v in MODE_MAP.items()}
 
 
 async def async_setup_entry(
@@ -29,75 +34,54 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Prana selects based on a config entry."""
+    """Set up Prana select entities from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: PranaDataUpdateCoordinator = data["coordinator"]
-    api: PranaBLEDevice = data["api"]
+    api: PranaApi = data["api"]
+    coordinator = data["coordinator"]
+    device_address = entry.data["address"]
 
-    async_add_entities([PranaModeSelect(coordinator, api, SELECT_DESCRIPTION)])
+    entities = [
+        PranaSelectEntity(coordinator, api, device_address, description)
+        for description in SELECT_TYPES
+    ]
+    async_add_entities(entities)
 
 
-class PranaModeSelect(PranaEntity, SelectEntity):
-    """Representation of a Prana mode select entity."""
+class PranaSelectEntity(PranaBaseEntity, SelectEntity):
+    """Representation of a Prana Select entity."""
 
-    def __init__(
-        self,
-        coordinator: PranaDataUpdateCoordinator,
-        api: PranaBLEDevice,
-        description: SelectEntityDescription,
-    ) -> None:
+    def __init__(self, coordinator, api: PranaApi, device_address: str, description: SelectEntityDescription) -> None:
         """Initialize the select entity."""
-        super().__init__(coordinator, api)
+        super().__init__(coordinator, api, device_address, description.key, description.name)
         self.entity_description = description
-        self._attr_unique_id = f"{api.address}_{description.key}"
-        # Set initial state
-         # self._handle_coordinator_update()
-
+        self._attr_name = description.name
+        self._attr_options = description.options # type: ignore
 
     @property
-    def current_option(self) -> str | None:
+    def current_option(self) -> Optional[str]:
         """Return the currently selected option."""
-        if self.coordinator.data:
-            mode_enum_name = self.coordinator.data.get("mode") # This should be the enum name string
-            if mode_enum_name:
-                try:
-                    mode_enum = PranaMode[mode_enum_name]
-                    return MODE_MAP.get(mode_enum) # Convert enum back to friendly name
-                except KeyError:
-                    LOGGER.warning("Unknown mode enum name in state: %s", mode_enum_name)
-                    return None
+        if self.coordinator.data and self._entity_key in self.coordinator.data:
+            value_index = self.coordinator.data[self._entity_key]
+            if 0 <= value_index < len(self.options):
+                return self.options[value_index]
         return None
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
-        if option not in MODE_NAME_TO_ENUM:
-            LOGGER.error("Invalid mode selected: %s", option)
+        if option not in self.options:
+            _LOGGER.warning("Invalid option %s for %s", option, self.entity_id)
             return
 
-        target_mode_enum = MODE_NAME_TO_ENUM[option]
-        LOGGER.debug("Setting mode for %s to %s (%s)", self._api.name, option, target_mode_enum)
+        option_index = self.options.index(option)
+        _LOGGER.debug(
+            "%s: Selecting option %s (index %d) for %s",
+            self.api.name, option, option_index, self.entity_description.key
+        )
 
-        if await self._api.set_mode(target_mode_enum):
-            # Optimistically update state
-            self._attr_current_option = option
+        success = await self.api.async_set_select_option(self.entity_description.key, option_index)
+        
+        if success:
+            if self.coordinator.data:
+                 self.coordinator.data[self.entity_description.key] = option_index # Optimistic
             self.async_write_ha_state()
-            # Request coordinator refresh to confirm state
             await self.coordinator.async_request_refresh()
-        else:
-            LOGGER.error("Failed to set mode %s for %s", option, self._api.name)
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        option = None
-        if self.coordinator.data:
-             mode_enum_name = self.coordinator.data.get("mode")
-             if mode_enum_name:
-                try:
-                    mode_enum = PranaMode[mode_enum_name]
-                    option = MODE_MAP.get(mode_enum)
-                except KeyError:
-                    option = None # Keep it None if unknown mode received
-
-        self._attr_current_option = option
-        self.async_write_ha_state()
