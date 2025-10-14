@@ -1,9 +1,12 @@
+[![GitHub](https://img.shields.io/github/license/catdogmaus/Prana?color=green)](https://github.com/catdogmaus/Prana/blob/main/LICENSE)  
+
 # Prana
 Allows Home Assistant to interface thru Bluetooth with Prana Recuperators
 
 **This integration is not yet ready for use!**  
-I belive strongly that this is because of my hardware. That means I am not able to make it work until in some day I change my HA hardware.  
-However it should install Prana device thru config flow withot any actual device data yet.
+The app can connect to the device (150/200 Premium plus) I don't have any way to test it with another model.   
+Anyway, it is currently possible to get the beef0502 package from the device but not beef0501 where the actual data is located. (Therefore, there is no sensor data). Some buttons are functional.
+However it should install Prana device thru config flow withot any actual device data yet.  
 If you are able, you are free to fork it and make it to work yourself.
 
 ## Installation via HACS
