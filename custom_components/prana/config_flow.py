@@ -21,7 +21,6 @@ AUTH_SCHEMA = vol.Schema({
 })
 
 async def _validate_connection(hass, address: str) -> bool:
-    # Changed connectable=True to False to catch sleeping devices
     ble_device = async_ble_device_from_address(hass, address, connectable=False)
     if not ble_device: raise CannotConnect("Device not found")
     client = None
@@ -66,17 +65,15 @@ class PranaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         current_addresses = self._async_current_ids()
         self._discovered_devices.clear()
         
-        # Changed connectable=True to False
         for discovery_info in async_discovered_service_info(self.hass, connectable=False):
             address = discovery_info.address
             if address in current_addresses: continue
             
             name = discovery_info.name or ""
-            
-            # Match by Service UUID
             has_uuid = UUID_PRANA_SERVICE.lower() in [uuid.lower() for uuid in discovery_info.service_uuids]
-            # Match by device name prefix (because UUID is often hidden by the device)
-            has_name = name.startswith("PRNA") or name.startswith("Prana")
+            
+            # --- NEW: Added PRNB to the match rules ---
+            has_name = name.startswith("PRNA") or name.startswith("PRNB") or name.startswith("Prana")
             
             if has_uuid or has_name:
                  self._discovered_devices[address] = name or address
