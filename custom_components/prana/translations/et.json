@@ -1,0 +1,109 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Vali Prana seade",
+                "description": "Kui seadet automaatselt ei leita, sisesta selle Bluetooth MAC-aadress.",
+                "data": {
+                    "address": "Seadme aadress (MAC)"
+                }
+            },
+            "authenticate": {
+                "title": "Seadista seade",
+                "description": "Vali oma Prana mudel, et Home Assistant teaks, milliseid funktsioone kuvada.\n\n- Standard: Põhifunktsioonid.\n- Premium: Lisab Auto režiimi, temperatuurid, õhuniiskuse.\n- Premium Plus: Lisab Auto+ režiimi, CO2, VOC.",
+                "data": {
+                    "password": "Parool (Vaikimisi 0000)",
+                    "model": "Seadme mudel"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Ühendamine nurjus. Veendu, et see on sisse lülitatud, levialas ja aadress on õige.",
+            "unknown": "Ilmnes tundmatu viga."
+        },
+        "abort": {
+            "already_configured": "See Prana seade on juba seadistatud."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Prana rekupereerija valikud",
+                "data": {
+                    "filter_duration_months": "Filtri kestus (kuud enne hoiatust)",
+                    "auto_restore_display": "Taasta ekraanirežiim automaatselt pärast muutmist"
+                }
+            }
+        }
+    },
+    "entity": {
+        "fan": {
+            "prana_power": { "name": "Prana Toide" }
+        },
+        "sensor": {
+            "temp_in": { "name": "Siseteemperatuur" },
+            "temp_out": { "name": "Välistemperatuur" },
+            "temp_supply": { "name": "Sissepuhke temperatuur" },
+            "temp_exhaust": { "name": "Väljatõmbe temperatuur" },
+            "humidity": { "name": "Õhuniiskus" },
+            "co2": { "name": "Süsihappegaas (CO2)" },
+            "voc": { "name": "Lenduvad orgaanilised ühendid (VOC)" },
+            "pressure": { "name": "Õhurõhk" },
+            "speed_in": { "name": "Sissepuhke kiirus" },
+            "speed_out": { "name": "Väljatõmbe kiirus" },
+            "efficiency_pct": { "name": "Soojustagastuse efektiivsus" },
+            "efficiency": {
+                "name": "Efektiivsuse olek",
+                "state": {
+                    "Super": "Suurepärane",
+                    "High": "Kõrge",
+                    "Good": "Hea",
+                    "Unknown": "Teadmata"
+                }
+            },
+            "winter_mode_active": {
+                "name": "Talverežiim aktiivne",
+                "state": { "on": "Sees", "off": "Väljas" }
+            },
+            "rssi": { "name": "Signaali tugevus" },
+            "filter_remaining": { "name": "Filtri järelejäänud aeg" }
+        },
+        "switch": {
+            "heating_on": { "name": "Seadme soojendus" },
+            "winter_mode_active": { "name": "Talverežiim" },
+            "fans_locked": { "name": "Ventilaatorid lukustatud (sünkroonis)" },
+            "bt_polling": { "name": "Bluetooth ühendus" }
+        },
+        "select": {
+            "mode": {
+                "name": "Ventilaatori režiim",
+                "state": {
+                    "Manual": "Käsitsi",
+                    "Auto": "Automaatne",
+                    "Auto+": "Automaatne+"
+                }
+            },
+            "display_mode": {
+                "name": "Ekraani režiim",
+                "state": {
+                    "Fan State": "Ventilaatori olek",
+                    "Temp Inside": "Siseteemperatuur",
+                    "Temp Outside": "Välistemperatuur",
+                    "CO2": "CO2",
+                    "VOC": "VOC",
+                    "Humidity": "Õhuniiskus",
+                    "Efficiency": "Efektiivsus",
+                    "Pressure": "Õhurõhk"
+                }
+            }
+        },
+        "number": {
+            "brightness": { "name": "Ekraani heledus" },
+            "speed_in": { "name": "Sissepuhke manuaalne kiirus" },
+            "speed_out": { "name": "Väljatõmbe manuaalne kiirus" }
+        },
+        "button": {
+            "reset_filter": { "name": "Lähtesta filtri taimer" }
+        }
+    }
+}
