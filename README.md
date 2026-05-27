@@ -7,6 +7,8 @@
 # Prana Bluetooth recuperators
 This is unofficial app for older Prana buetooth devices that allows Home Assistant to interface thru Bluetooth with Prana 150/200 Recuperators.
 
+The idea for creating integration comes from the work of https://github.com/voed/esphome_prana_ble but nothing that had been done by others so far worked quite well with my device.
+
 ## Installation via HACS
 
 1. Go to HACS
