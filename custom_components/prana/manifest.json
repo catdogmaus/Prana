@@ -12,6 +12,12 @@
     },
     {
       "local_name": "PRNA*"
+    },
+    {
+      "local_name": "PRNB*"
+    },
+    {
+      "local_name": "Prana*"
     }
   ],
   "dependencies": ["bluetooth"],
