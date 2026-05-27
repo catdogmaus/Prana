@@ -1,104 +1,126 @@
-"""The Prana HASS integration."""
+"""The Prana Integration."""
 import asyncio
 import logging
+import time
 from datetime import timedelta
-
-from bleak import BleakClient
-from bleak.exc import BleakError
-from bleak_retry_connector import establish_connection
+from typing import Any, Dict
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.const import CONF_ADDRESS, CONF_PASSWORD, Platform
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import PranaApi
-from .const import (
-    CONF_SCAN_INTERVAL,
-    DOMAIN,
-    PLATFORMS,
-    MODEL_NAME
-)
+from .const import DOMAIN, LOGGER, UPDATE_INTERVAL_SECONDS, DEFAULT_PASSWORD, CONF_MODEL
+from .api import PranaBLEDevice
 
-_LOGGER = logging.getLogger(__name__)
-
-SHORT_UPDATE_INTERVAL = 20 # seconds
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.FAN,
+    Platform.SELECT,
+    Platform.NUMBER,
+    Platform.BUTTON,
+]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Prana HASS from a config entry."""
     address = entry.data[CONF_ADDRESS]
+    password = entry.data.get(CONF_PASSWORD, DEFAULT_PASSWORD)
+    address = address.upper()
 
-    ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), connectable=True)
+    if "filter_reset_timestamp" not in entry.data:
+        new_data = {**entry.data, "filter_reset_timestamp": time.time(), "virtual_display_mode": 0}
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
+    ble_device = bluetooth.async_ble_device_from_address(hass, address, connectable=False)
     if not ble_device:
-        raise ConfigEntryNotReady(f"Could not find BLE device with address {address}")
-    
-    api_name = entry.title
-    prana_api = PranaApi(hass, ble_device, api_name)
-    
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = { "api": prana_api }
+        raise ConfigEntryNotReady(f"Prana device {address} not found. Ensure it is powered on.")
 
-    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, SHORT_UPDATE_INTERVAL)
-    _LOGGER.debug("Using scan interval: %s seconds", scan_interval)
+    initial_display = entry.data.get("virtual_display_mode", 0)
 
-    async def async_update_data() -> dict | None:
-        """Fetch data from API using bleak-retry-connector."""
-        _LOGGER.debug("Coordinator: Polling data for %s", prana_api.name)
-        try:
-            if not prana_api.is_connected():
-                _LOGGER.info("%s is not connected. Establishing connection...", prana_api.name)
-                client = await establish_connection(
-                    client_class=BleakClient,
-                    device=prana_api.ble_device,
-                    name=prana_api.name,
-                    disconnected_callback=prana_api.handle_disconnect,
-                    max_attempts=2
-                )
-                return await prana_api.update_after_connect(client)
-            else:
-                _LOGGER.debug("%s is already connected. Sending status poll.", prana_api.name)
-                return await prana_api.async_get_status()
-        except Exception as err:
-            _LOGGER.warning("Error fetching Prana data: %s", err)
-            await prana_api.disconnect()
-            raise UpdateFailed(f"Error communicating with Prana device: {err}") from err
+    def save_display_mode(mode: int):
+        """Callback to save display mode memory across HA restarts."""
+        new_data = {**entry.data, "virtual_display_mode": mode}
+        hass.config_entries.async_update_entry(entry, data=new_data)
 
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=prana_api.name,
-        update_method=async_update_data,
-        update_interval=timedelta(seconds=scan_interval),
+    api = PranaBLEDevice(
+        ble_device, 
+        password, 
+        hass=hass, 
+        initial_display_mode=initial_display,
+        save_display_mode_callback=save_display_mode
     )
+    api.auto_restore_display = entry.options.get("auto_restore_display", True)
     
-    hass.data[DOMAIN][entry.entry_id]["coordinator"] = coordinator
+    coordinator = PranaDataUpdateCoordinator(hass, api, entry)
+    api._data_update_callback = coordinator._handle_api_data_update
+    api._disconnected_callback = coordinator._handle_api_disconnect
 
-    await coordinator.async_config_entry_first_refresh()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "api": api,
+        "coordinator": coordinator,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    @callback
-    def _async_options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        hass.async_create_task(hass.config_entries.async_reload(entry.entry_id))
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        pass 
 
-    async def _async_shutdown(event: Event) -> None:
-        await prana_api.disconnect()
-
-    entry.async_on_unload(entry.add_update_listener(_async_options_update_listener))
-    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_shutdown))
-    entry.async_on_unload(prana_api.disconnect)
-
-    _LOGGER.info("Prana entry %s setup complete.", entry.entry_id)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_on_unload(coordinator.async_request_shutdown)
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    _LOGGER.info("Unloading Prana entry %s", entry.entry_id)
-    if entry.entry_id in hass.data.get(DOMAIN, {}):
-        api: PranaApi = hass.data[DOMAIN][entry.entry_id]["api"]
-        await api.disconnect()
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
+    if coordinator:
+         await coordinator.async_request_shutdown()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok and entry.entry_id in hass.data.get(DOMAIN, {}):
-        hass.data[DOMAIN].pop(entry.entry_id)
+    if unload_ok:
+        data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if data:
+            await data["api"].stop()
     return unload_ok
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options/data updates SILENTLY without reloading Bluetooth."""
+    data = hass.data[DOMAIN].get(entry.entry_id)
+    if data and "api" in data:
+        data["api"].auto_restore_display = entry.options.get("auto_restore_display", True)
+        LOGGER.debug("Prana config updated quietly. Reload suppressed.")
+
+class PranaDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
+    def __init__(self, hass: HomeAssistant, api: PranaBLEDevice, config_entry: ConfigEntry):
+        self.api = api
+        self.config_entry = config_entry
+        self._shutdown = False
+        super().__init__(
+            hass, LOGGER, name=f"{DOMAIN}-{api.address}",
+            update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+        )
+
+    async def _async_update_data(self) -> Dict[str, Any]:
+        try:
+            data = await self.api.update_data()
+            if not data:
+                raise UpdateFailed("No data returned from device")
+            return data
+        except Exception as err:
+            raise UpdateFailed(f"Error communicating with device: {err}") from err
+
+    @callback
+    def _handle_api_data_update(self, data: dict):
+        self.async_set_updated_data(data)
+
+    @callback
+    def _handle_api_disconnect(self):
+        if not self._shutdown:
+            self.async_update_listeners()
+
+    async def async_request_shutdown(self) -> None:
+        if self._shutdown: return
+        self._shutdown = True
+        await self.api.stop()

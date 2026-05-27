@@ -5,10 +5,13 @@
   "config_flow": true,
   "documentation": "https://github.com/your-github-username/ha-prana-ble",
   "issue_tracker": "https://github.com/your-github-username/ha-prana-ble/issues",
-  "requirements": ["bleak>=0.20.0"],
+  "requirements": ["bleak>=0.20.0", "bleak-retry-connector>=3.0.0"],
   "bluetooth": [
     {
       "service_uuid": "0000baba-0000-1000-8000-00805f9b34fb"
+    },
+    {
+      "local_name": "PRNA*"
     }
   ],
   "dependencies": ["bluetooth"],

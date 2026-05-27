@@ -1,87 +1,78 @@
-"""Select entities for Prana HASS integration."""
-import logging
-from typing import List, Optional
-
+"""Select platform for Prana Integration."""
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import PranaApi
-from .const import DOMAIN, DISPLAY_MODE_OPTIONS, FAN_MODE_OPTIONS
-from .entity import PranaBaseEntity
+from .const import DOMAIN, LOGGER, PranaMode, PranaDisplayMode, CONF_MODEL
+from . import PranaDataUpdateCoordinator
+from .entity import PranaEntity
+from .api import PranaBLEDevice
 
-_LOGGER = logging.getLogger(__name__)
+MODE_MAP = {
+    PranaMode.MANUAL: "Manual",
+    PranaMode.AUTO: "Auto",
+    PranaMode.AUTO_PLUS: "Auto+",
+}
+MODE_NAME_TO_ENUM = {v: k for k, v in MODE_MAP.items()}
 
-SELECT_TYPES: tuple[SelectEntityDescription, ...] = (
-    SelectEntityDescription(
-        key="display_mode",
-        name="Display Mode",
-        icon="mdi:unfold-more-vertical", # Or mdi:television-guide
-        options=DISPLAY_MODE_OPTIONS,
-    ),
-    SelectEntityDescription(
-        key="fan_mode",
-        name="Fan Mode",
-        icon="mdi:fan-auto",
-        options=FAN_MODE_OPTIONS,
-    ),
-)
+DISPLAY_MODE_MAP = {
+    PranaDisplayMode.FAN: "Fan State",
+    PranaDisplayMode.TEMP_IN: "Temp Inside",
+    PranaDisplayMode.TEMP_OUT: "Temp Outside",
+    PranaDisplayMode.CO2: "CO2",
+    PranaDisplayMode.VOC: "VOC",
+    PranaDisplayMode.HUMIDITY: "Humidity",
+    PranaDisplayMode.AIR_QUALITY: "Efficiency", 
+    PranaDisplayMode.PRESSURE: "Pressure",
+}
+DISPLAY_MODE_NAME_TO_ENUM = {v: k for k, v in DISPLAY_MODE_MAP.items()}
 
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Prana select entities from a config entry."""
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     data = hass.data[DOMAIN][entry.entry_id]
-    api: PranaApi = data["api"]
-    coordinator = data["coordinator"]
-    device_address = entry.data["address"]
+    coordinator: PranaDataUpdateCoordinator = data["coordinator"]
+    api: PranaBLEDevice = data["api"]
+    model = entry.data.get(CONF_MODEL, "Premium Plus")
 
-    entities = [
-        PranaSelectEntity(coordinator, api, device_address, description)
-        for description in SELECT_TYPES
-    ]
+    mode_options = ["Manual"]
+    if model in ["Premium", "Premium Plus"]: mode_options.append("Auto")
+    if model == "Premium Plus": mode_options.append("Auto+")
+
+    display_options = ["Fan State"]
+    if model in ["Premium", "Premium Plus"]:
+        display_options.extend(["Temp Inside", "Temp Outside", "Humidity", "Pressure"])
+    if model == "Premium Plus":
+        display_options.extend(["CO2", "VOC", "Efficiency"])
+
+    active_selects = []
+    if model != "Standard":
+        active_selects.append(SelectEntityDescription(key="mode", translation_key="mode", icon="mdi:cog-outline", options=mode_options))
+        active_selects.append(SelectEntityDescription(key="display_mode", translation_key="display_mode", icon="mdi:monitor-dashboard", options=display_options))
+
+    entities = [PranaSelect(coordinator, api, desc) for desc in active_selects]
     async_add_entities(entities)
 
-
-class PranaSelectEntity(PranaBaseEntity, SelectEntity):
-    """Representation of a Prana Select entity."""
-
-    def __init__(self, coordinator, api: PranaApi, device_address: str, description: SelectEntityDescription) -> None:
-        """Initialize the select entity."""
-        super().__init__(coordinator, api, device_address, description.key, description.name)
+class PranaSelect(PranaEntity, SelectEntity):
+    def __init__(self, coordinator: PranaDataUpdateCoordinator, api: PranaBLEDevice, description: SelectEntityDescription) -> None:
+        super().__init__(coordinator, api)
         self.entity_description = description
-        self._attr_name = description.name
-        self._attr_options = description.options # type: ignore
+        self._attr_unique_id = f"{api.address}_{description.key}"
 
     @property
-    def current_option(self) -> Optional[str]:
-        """Return the currently selected option."""
-        if self.coordinator.data and self._entity_key in self.coordinator.data:
-            value_index = self.coordinator.data[self._entity_key]
-            if 0 <= value_index < len(self.options):
-                return self.options[value_index]
+    def current_option(self) -> str | None:
+        if self.coordinator.data:
+            return self.coordinator.data.get(self.entity_description.key)
         return None
 
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
-        if option not in self.options:
-            _LOGGER.warning("Invalid option %s for %s", option, self.entity_id)
-            return
+        if self.entity_description.key == "mode" and option in MODE_NAME_TO_ENUM:
+            await self._api.set_mode(MODE_NAME_TO_ENUM[option])
+        elif self.entity_description.key == "display_mode" and option in DISPLAY_MODE_NAME_TO_ENUM:
+            await self._api.set_display_mode(DISPLAY_MODE_NAME_TO_ENUM[option])
+            
+        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
 
-        option_index = self.options.index(option)
-        _LOGGER.debug(
-            "%s: Selecting option %s (index %d) for %s",
-            self.api.name, option, option_index, self.entity_description.key
-        )
-
-        success = await self.api.async_set_select_option(self.entity_description.key, option_index)
-        
-        if success:
-            if self.coordinator.data:
-                 self.coordinator.data[self.entity_description.key] = option_index # Optimistic
-            self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()

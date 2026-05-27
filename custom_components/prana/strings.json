@@ -8,20 +8,21 @@
                     "address": "MAC Address"
                 }
             },
-            "bluetooth_confirm": {
-                "title": "Confirm Prana Device",
-                "description": "Do you want to add the Prana device named '{name}' at address '{address}'?"
+            "authenticate": {
+                "title": "Authentication",
+                "description": "Enter the password for your Prana device '{name}'. The default is '0000'.",
+                "data": {
+                    "password": "Password"
+                }
             }
         },
         "error": {
             "invalid_mac": "The MAC address format is invalid.",
             "cannot_connect": "Unable to connect to the device. Please check the MAC address and ensure the device is powered on and in range.",
-            "unknown": "An unknown error occurred.",
-            "internal_error_no_discovery": "Internal error: No discovery information available for Bluetooth confirmation."
+            "unknown": "An unknown error occurred."
         },
         "abort": {
-            "already_configured": "This Prana device is already configured.",
-            "no_devices_found": "No Prana devices found. Ensure Bluetooth is enabled and the device is nearby. You can also try adding manually." 
+            "already_configured": "This Prana device is already configured."
         }
     },
     "options": {
@@ -29,7 +30,8 @@
             "init": {
                 "title": "Prana Recuperator Options",
                 "data": {
-                    "scan_interval": "Scan Interval (seconds)"
+                    "filter_duration_months": "Filter Duration (Months before alert)",
+                    "auto_restore_display": "Auto-Restore Display Mode after changes"
                 }
             }
         }
