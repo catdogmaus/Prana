@@ -1,9 +1,11 @@
 {
-  "name": "Prana Integration",
+  "name": "Prana Recuperator BLE",
+  "render_readme": true,
   "content_in_root": false,
-  "codeowners": ["@catdogmaus"],
-  "config_flow": true
-  "issue_tracker": "https://github.com/catdogmaus/Prana/issues",
+  "config_flow": true,
   "iot_class": "local_polling",
+  "hacs": "1.19.0",
   "domains": ["prana"]
+  "codeowners": ["@catdogmaus"],
+  "issue_tracker": "https://github.com/catdogmaus/Prana/issues",
 }
