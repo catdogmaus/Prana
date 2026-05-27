@@ -22,7 +22,7 @@ For you device mac addres go to `Settings` click `Bluetooth` and then below `Ada
 
 ## Different models
 
-This integration has been tested with the `Premium Plus` model and I don't have the options to do it with the `Premium` and `Standard` models, so I literally had to guess what sensors and features are available in these other versions exactly. If you find that a feature is missing or something shouldn't be there, you can open an issue and hopefully I can fix it when I have time. 
+This integration has been tested with the `Premium Plus` model and I don't have the options to do it with the `Premium` and `Standard` models, so I literally had to guess what sensors and features are available in these other versions exactly. If you find that a feature is missing or something shouldn't be there, you can open an issue and hopefully I can fix it when I have time. For that I need exact model and a description of what you think is missing or excessive in the settings.
 If, despite everything, you still can't connect your device at all, it's probably an incompatible version (newer or older). In that case, your out of luck. I have no way to test them and get to work with this integration.
 
 ## Other noteworthy things
