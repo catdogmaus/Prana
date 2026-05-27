@@ -37,6 +37,8 @@ The filter warning is a simple counter. Prana recommends performing a full maint
 
 The Prana device has a very annoying feature of moving the device's display every time the mode is changed to the default fan speed. The integration has the ability to override this. Your screen will remain in the same position as before. However, if you are not happy with this for any reason, you can disable this behavior in the settings.
 
+Depending of you system, connection to device after HA restart could take several minutes so dont panic. ;)
+
 ## Problems with adding Prana device
 
 When you are unable to add new device even with manual setup make sure that Prana is not connected to any other device (e.g. native Prana app). Also make sure your HA Bluetooth `Connections` slots is not full!
