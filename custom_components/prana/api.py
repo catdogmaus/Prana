@@ -126,7 +126,10 @@ class PranaBLEDevice:
             
             b_raw = data[12]
             new_state["brightness_raw"] = b_raw
-            new_state["brightness"] = int(math.log2(b_raw)) + 1 if b_raw > 0 else 1
+            if b_raw > 0:
+                new_state["brightness"] = int(math.log2(b_raw)) + 1
+            else:
+                new_state["brightness"] = 1
                 
             new_state["heating_on"] = bool(data[14])
             
@@ -149,9 +152,10 @@ class PranaBLEDevice:
             def convert_temp(offset):
                 return (struct.unpack_from('>H', data, offset)[0] & 0x3FFF) / 10.0
 
-            new_state["temp_in"] = convert_temp(48)
+            # SWAPPED: 48 is now Supply, 54 is now Indoor
+            new_state["temp_supply"] = convert_temp(48)
             new_state["temp_out"] = convert_temp(51)
-            new_state["temp_supply"] = convert_temp(54)
+            new_state["temp_in"] = convert_temp(54)
             new_state["temp_exhaust"] = convert_temp(57)
 
             hum = data[60] - 128
@@ -329,7 +333,27 @@ class PranaBLEDevice:
                  await asyncio.sleep(0.3)
              
              if self.auto_restore_display and previous_display != 0:
-                 await self._set_display_mode_locked(previous_display)
+                 diff_r = (previous_display - 0 + 11) % 11
+                 diff_l = (0 - previous_display + 11) % 11
+                 steps = 0
+                 if diff_r <= diff_l:
+                     cmd = PRANA_CMD_DISPLAY_RIGHT
+                     c = 0
+                     while c != previous_display:
+                         c = (c + 1) % 11
+                         if c == 8: c = (c + 1) % 11 
+                         steps += 1
+                 else:
+                     cmd = PRANA_CMD_DISPLAY_LEFT
+                     c = 0
+                     while c != previous_display:
+                         c = (c - 1 + 11) % 11
+                         if c == 8: c = (c - 1 + 11) % 11 
+                         steps += 1
+                 for _ in range(steps):
+                     await self._send_command_locked(_build_action_frame(cmd))
+                     await asyncio.sleep(0.5)
+                 self._set_virtual_display_mode(previous_display)
 
              await asyncio.sleep(0.5)
              await self._send_command_locked(_build_state_request_frame())
@@ -352,7 +376,27 @@ class PranaBLEDevice:
                      await asyncio.sleep(0.5)
                      
              if self.auto_restore_display and previous_display != 0:
-                 await self._set_display_mode_locked(previous_display)
+                 diff_r = (previous_display - 0 + 11) % 11
+                 diff_l = (0 - previous_display + 11) % 11
+                 steps = 0
+                 if diff_r <= diff_l:
+                     cmd = PRANA_CMD_DISPLAY_RIGHT
+                     c = 0
+                     while c != previous_display:
+                         c = (c + 1) % 11
+                         if c == 8: c = (c + 1) % 11 
+                         steps += 1
+                 else:
+                     cmd = PRANA_CMD_DISPLAY_LEFT
+                     c = 0
+                     while c != previous_display:
+                         c = (c - 1 + 11) % 11
+                         if c == 8: c = (c - 1 + 11) % 11 
+                         steps += 1
+                 for _ in range(steps):
+                     await self._send_command_locked(_build_action_frame(cmd))
+                     await asyncio.sleep(0.5)
+                 self._set_virtual_display_mode(previous_display)
 
              await self._send_command_locked(_build_state_request_frame())
              await asyncio.sleep(1.0)
@@ -361,7 +405,35 @@ class PranaBLEDevice:
     async def set_display_mode(self, mode: PranaDisplayMode) -> bool:
         async with self._lock:
             if not await self._ensure_connected_locked(): return False
-            await self._set_display_mode_locked(mode.value)
+            current = self._virtual_display_mode
+            target = mode.value
+            
+            if current == target: return True
+            
+            diff_r = (target - current + 11) % 11
+            diff_l = (current - target + 11) % 11
+            
+            steps = 0
+            if diff_r <= diff_l:
+                cmd = PRANA_CMD_DISPLAY_RIGHT
+                c = current
+                while c != target:
+                    c = (c + 1) % 11
+                    if c == 8: c = (c + 1) % 11 
+                    steps += 1
+            else:
+                cmd = PRANA_CMD_DISPLAY_LEFT
+                c = current
+                while c != target:
+                    c = (c - 1 + 11) % 11
+                    if c == 8: c = (c - 1 + 11) % 11 
+                    steps += 1
+            
+            for _ in range(steps):
+                await self._send_command_locked(_build_action_frame(cmd))
+                await asyncio.sleep(0.5)
+                
+            self._set_virtual_display_mode(target)
             await self._send_command_locked(_build_state_request_frame())
             await asyncio.sleep(1.0)
             return True
@@ -393,9 +465,3 @@ class PranaBLEDevice:
         if self._current_state.get("fans_locked", False) != state:
              return await self._execute_action(_build_action_frame(0x09))
         return True
-
-    async def reset_filter(self) -> bool:
-        return True
-
-    async def get_current_state(self) -> Dict[str, Any]:
-         return self._current_state.copy()
