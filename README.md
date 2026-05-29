@@ -31,7 +31,7 @@ If, despite everything, you still can't connect your device at all, it's probabl
 
 The Prana device does not reliably report the position of the screen, so the integration essentially has to guess what position it actually is. This works pretty well, but if someone uses the remote control in the meantime, there is an understandable gap in the integration's knowledge. If the screen is out of sync, the easiest way to get it back is to briefly change the operating mode, Auto or Manual. This helps the integration heal its knowledge.
 
-Winter setting and Heating are untested. It is simply not possible to do this in summer.
+Winter setting is untested. It is simply not possible to do this in summer.
 
 The filter warning is a simple counter. Prana recommends performing a full maintenance at least once a year, but you can change this interval to your exact preference in the settings.
 
