@@ -15,7 +15,8 @@ The idea for creating integration comes from the work of https://github.com/voed
 2. Click the `⋮` button in corner
 3. Add this repository as a **custom repository** (`https://github.com/catdogmaus/Prana`)
 4. Select "Integration"
-5. Restart Home Assistant
+5. Download it in HACS
+6. Restart Home Assistant
 
 ## Setup
 
