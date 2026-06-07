@@ -41,7 +41,7 @@
             "prana_power": { "name": "Prana Toide" }
         },
         "sensor": {
-            "temp_in": { "name": "Siseteemperatuur" },
+            "temp_in": { "name": "Sisetemperatuur" },
             "temp_out": { "name": "Välistemperatuur" },
             "temp_supply": { "name": "Sissepuhke temperatuur" },
             "temp_exhaust": { "name": "Väljatõmbe temperatuur" },
