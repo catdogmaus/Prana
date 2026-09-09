@@ -1,11 +1,14 @@
 {
   "domain": "prana",
   "name": "Prana Recuperator BLE",
-  "version": "1.0.0",
+  "version": ".1.0.2",
   "config_flow": true,
   "documentation": "https://github.com/catdogmaus/Prana",
   "issue_tracker": "https://github.com/catdogmaus/Prana/issues",
-  "requirements": ["bleak>=0.20.0", "bleak-retry-connector>=3.0.0"],
+  "requirements": [
+    "bleak>=0.20.0",
+    "bleak-retry-connector>=3.0.0"
+  ],
   "bluetooth": [
     {
       "service_uuid": "0000baba-0000-1000-8000-00805f9b34fb"
@@ -20,8 +23,15 @@
       "local_name": "Prana*"
     }
   ],
-  "dependencies": ["bluetooth"],
-  "codeowners": ["@catdogmaus"],
+  "dependencies": [
+    "bluetooth"
+  ],
+  "codeowners": [
+    "@catdogmaus"
+  ],
   "iot_class": "local_push",
-  "loggers": ["bleak", "custom_components.prana"]
+  "loggers": [
+    "bleak",
+    "custom_components.prana"
+  ]
 }
