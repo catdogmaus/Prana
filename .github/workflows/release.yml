@@ -20,29 +20,34 @@ jobs:
       # Step 2: Update manifest.json version
       - name: Update manifest.json version
         run: |
-          # 1. Strip 'v' from tag name if present (e.g., 'v1.2.0' -> '1.2.0')
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
+          # 1. Get the tag name (e.g., v1.2.0)
+          RAW_TAG="${{ github.event.release.tag_name }}"
+          
+          # 2. Strip leading 'v' AND leading '.' if present
+          # ${RAW_TAG#v} removes 'v', then ${...#.} removes a leading dot
+          VERSION="${RAW_TAG#v}"
+          VERSION="${VERSION#.}"
+          
+          echo "Setting version to: $VERSION"
 
-          # Path to manifest.json at repo root
           MANIFEST_PATH="custom_components/prana/manifest.json"
 
-          # 2. Update version key in manifest.json using jq
+          # 3. Update version key in manifest.json
           jq --arg v "$VERSION" '.version = $v' "$MANIFEST_PATH" > tmp.json && mv tmp.json "$MANIFEST_PATH"
 
-          # 3. Configure git bot
+          # 4. Configure git bot
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 4. If manifest changed, commit to main and move the release tag
+          # 5. Commit and re-tag
           if ! git diff --quiet "$MANIFEST_PATH"; then
             git add "$MANIFEST_PATH"
             git commit -m "bump: manifest version to $VERSION [skip ci]"
             git push origin HEAD:main
 
-            # Re-tag the new commit so HACS gets the updated manifest
-            git tag -f "$TAG"
-            git push origin "$TAG" --force
+            # Force the tag to point to this new commit
+            git tag -f "$RAW_TAG"
+            git push origin "$RAW_TAG" --force
           fi
 
       # Step 3: Existing step to prepend badges to the release body
