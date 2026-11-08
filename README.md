@@ -9,14 +9,19 @@ This is unofficial app for older Prana buetooth devices that allows Home Assista
 
 The idea for creating integration comes from the work of https://github.com/voed/esphome_prana_ble but nothing that had been done by others so far worked quite well with my device.
 
-## Installation via HACS
+## Installation
 
-1. Go to HACS
-2. Click the `⋮` button in corner
-3. Add this repository as a **custom repository** (`https://github.com/catdogmaus/Prana`)
-4. Select "Integration"
-5. Download it in HACS
-6. Restart Home Assistant
+The easiest way to install this integration is from HA Marketplace.
+Distributed as a **custom repository**. Add it in one click:
+
+[![Open Prana](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=catdogmaus&repository=Prana&category=integration)
+
+Or add it manually:
+1. Go to Marketpace
+2. Click the `⋮` button in corner and Custom repositories
+3. "Add from link" this repository as a **custom repository** `https://github.com/catdogmaus/ilmaprognoos`
+4. Click on that new added repository
+5. Click "Install"
 
 ## Setup
 
